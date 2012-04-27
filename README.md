@@ -7,8 +7,7 @@
 
 ## Install WebUI manually
 1. copy the WebUI directory into your ~/Aurora-Sim/addon-modules/ directory
-2. Run runprebuild.bat or runprebuild2010.bat
-3. Run compile.bat
+2. Run runprebuild.bat
 
 # Configuration
 
