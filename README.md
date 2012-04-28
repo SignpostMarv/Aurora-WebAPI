@@ -2,7 +2,7 @@
 
 ## Install WebUI via console
 1. Start Aurora.Server.exe (if you want to run in Grid mode) or Aurora.exe (if you want to run in StandAlone mode)
-2. Put into the console 'compile module gui' and browse to the WebUI directory in your Aurora-Sim-Optional-Modules download and open the build.am file.
+2. Put into the console 'compile module gui' and browse to the WebUI directory in your Aurora-WebAPI download and open the build.am file.
 3. Follow the instructions on-screen and it will compile and install your module and you are all done with setup.
 
 ## Install WebUI manually
