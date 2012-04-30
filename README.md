@@ -1,5 +1,5 @@
 # Releases
-All releases are available as tags on GitHub.
+All releases are available as source tags on GitHub.
 
 ## v1.x
 * v1.0 runs under [Aurora-Sim 5.0.1](https://github.com/aurora-sim/Aurora-Sim/downloads)
