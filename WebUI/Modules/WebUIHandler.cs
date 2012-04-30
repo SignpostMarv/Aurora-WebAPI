@@ -1641,13 +1641,13 @@ namespace Aurora.Services
         private OSDMap GetAbuseReports(OSDMap map)
         {
             OSDMap resp = new OSDMap();
-            IAbuseReports ar = m_registry.RequestModuleInterface<IAbuseReports>();
+            IAbuseReports ar_service = m_registry.RequestModuleInterface<IAbuseReports>();
 
             int start = map["Start"].AsInteger();
             int count = map["Count"].AsInteger();
             bool active = map["Active"].AsBoolean();
 
-            List<AbuseReport> lar = ar.GetAbuseReports(start, count, active);
+            List<AbuseReport> lar = ar_service.GetAbuseReports(start, count, active);
             OSDArray AbuseReports = new OSDArray();
             foreach (AbuseReport tar in lar)
             {
@@ -1658,6 +1658,38 @@ namespace Aurora.Services
             resp["Start"] = OSD.FromInteger(start);
             resp["Count"] = OSD.FromInteger(count); // we're not using the AbuseReports.Count because client implementations of the WebUI API can check the count themselves. This is just for showing the input.
             resp["Active"] = OSD.FromBoolean(active);
+
+            return resp;
+        }
+
+        private OSDMap GetAbuseReport(OSDMap map)
+        {
+            OSDMap resp = new OSDMap();
+            IAbuseReports ar_service = m_registry.RequestModuleInterface<IAbuseReports>();
+            if (ar_service == null)
+            {
+                resp["Failed"] = new OSDString("Failed to find IAbuseReports service.");
+            }
+            else if (!map.ContainsKey("AbuseReport"))
+            {
+                resp["Failed"] = new OSDString("Abuse Report ID not specified.");
+            }
+            else if (!map.ContainsKey("WebPassword"))
+            {
+                resp["Failed"] = new OSDString("Cannot authenticate against IAbuseReports service.");
+            }
+            else
+            {
+                AbuseReport ar = ar_service.GetAbuseReport(map["AbuseReport"].AsInteger(), map["WebPassword"].AsString());
+                if (ar == null)
+                {
+                    resp["Failed"] = new OSDString("Failed to find Abuse Report with specified ID.");
+                }
+                else
+                {
+                    resp["AbuseReport"] = ar.ToOSD();
+                }
+            }
 
             return resp;
         }
