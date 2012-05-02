@@ -1531,6 +1531,7 @@ namespace Aurora.Services
                     userInfo["UserName"] = acc.Name;
                     userInfo["Created"] = acc.Created;
                     userInfo["UserFlags"] = acc.UserFlags;
+                    userInfo["UserLevel"] = acc.UserLevel;
                     users.Add(userInfo);
                 }
                 resp["Users"] = users;
