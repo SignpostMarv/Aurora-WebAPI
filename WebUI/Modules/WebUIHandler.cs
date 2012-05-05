@@ -1279,9 +1279,15 @@ namespace Aurora.Services
             string Name = map["Name"].AsString();
             UUID userID = map["UUID"].AsUUID();
 
-            UserAccount account = Name != "" ? 
-                m_registry.RequestModuleInterface<IUserAccountService>().GetUserAccount(UUID.Zero, Name) :
-                 m_registry.RequestModuleInterface<IUserAccountService>().GetUserAccount(UUID.Zero, userID);
+            IUserAccountService accountService = m_registry.RequestModuleInterface<IUserAccountService>();
+
+            if (accountService == null)
+            {
+                resp["Failed"] = new OSDString("Could not find IUserAccountService");
+                return resp;
+            }
+
+            UserAccount account = Name != "" ? accountService.GetUserAccount(UUID.Zero, Name) : accountService.GetUserAccount(UUID.Zero, userID);
             if (account != null)
             {
                 OSDMap accountMap = new OSDMap();
@@ -1291,6 +1297,7 @@ namespace Aurora.Services
                 accountMap["PrincipalID"] = account.PrincipalID;
                 accountMap["Email"] = account.Email;
                 accountMap["UserLevel"] = account.UserLevel;
+                accountMap["UserFlags"] = account.UserFlags;
 
                 TimeSpan diff = DateTime.Now - Util.ToDateTime(account.Created);
                 int years = (int)diff.TotalDays / 356;
@@ -1304,13 +1311,14 @@ namespace Aurora.Services
                     resp["profile"] = profile.ToOSD(false);//not trusted, use false
 
                     if (account.UserFlags == 0)
+                    {
                         account.UserFlags = 2; //Set them to no info given
+                    }
 
                     string flags = ((IUserProfileInfo.ProfileFlags)account.UserFlags).ToString();
                     IUserProfileInfo.ProfileFlags.NoPaymentInfoOnFile.ToString();
 
-                    accountMap["AccountInfo"] = (profile.CustomType != "" ? profile.CustomType :
-                        account.UserFlags == 0 ? "Resident" : "Admin") + "\n" + flags;
+                    accountMap["AccountInfo"] = (profile.CustomType != "" ? profile.CustomType : account.UserFlags == 0 ? "Resident" : "Admin") + "\n" + flags;
                     UserAccount partnerAccount = m_registry.RequestModuleInterface<IUserAccountService>().GetUserAccount(UUID.Zero, profile.Partner);
                     if (partnerAccount != null)
                     {
@@ -1329,6 +1337,7 @@ namespace Aurora.Services
                 if(agent != null)
                 {
                     OSDMap agentMap = new OSDMap();
+                    agentMap["Flags"] = (int)agent.Flags;
                     agentMap["RLName"] = agent.OtherAgentInformation["RLName"].AsString();
                     agentMap["RLAddress"] = agent.OtherAgentInformation["RLAddress"].AsString();
                     agentMap["RLZip"] = agent.OtherAgentInformation["RLZip"].AsString();
@@ -1450,16 +1459,17 @@ namespace Aurora.Services
         #region banning
 
         private void doBan(UUID agentID, DateTime? until){
-            IAgentInfo GetAgent = Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>().GetAgent(agentID);
+            IAgentConnector agentConnector = Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>();
+            IAgentInfo GetAgent = agentConnector.GetAgent(agentID);
             if (GetAgent != null)
             {
-                GetAgent.Flags &= (until.HasValue) ? ~IAgentFlags.TempBan : ~IAgentFlags.PermBan;
+                GetAgent.Flags |= (until.HasValue) ? IAgentFlags.TempBan : IAgentFlags.PermBan;
                 if (until.HasValue)
                 {
                     GetAgent.OtherAgentInformation["TemperaryBanInfo"] = until.Value.ToString("s");
                     MainConsole.Instance.TraceFormat("Temp ban for {0} until {1}", agentID, until.Value.ToString("s"));
                 }
-                Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>().UpdateAgent(GetAgent);
+                agentConnector.UpdateAgent(GetAgent);
             }
         }
 
@@ -1512,9 +1522,14 @@ namespace Aurora.Services
         {
             OSDMap resp = new OSDMap();
             IUserAccountService accountService = m_registry.RequestModuleInterface<IUserAccountService>();
+            IAgentConnector agentConnector = Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>();
             if (accountService == null)
             {
-                map["Failed"] = new OSDString("Could not find IUserAccountService");
+                resp["Failed"] = new OSDString("Could not find IUserAccountService");
+            }
+            else if (agentConnector == null)
+            {
+                resp["Failed"] = new OSDString("Could not find IAgentConnector");
             }
             else
             {
@@ -1534,6 +1549,12 @@ namespace Aurora.Services
                     userInfo["Created"] = acc.Created;
                     userInfo["UserFlags"] = acc.UserFlags;
                     userInfo["UserLevel"] = acc.UserLevel;
+                    IAgentInfo agent = agentConnector.GetAgent(acc.PrincipalID);
+                    if (agent == null)
+                    {
+                        MainConsole.Instance.ErrorFormat("Could not get IAgentInfo for {0} ({1})", acc.Name, acc.PrincipalID);
+                    }
+                    userInfo["Flags"] = (agent == null) ? 0 : (int)agent.Flags;
                     users.Add(userInfo);
                 }
                 resp["Users"] = users;
