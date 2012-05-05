@@ -902,24 +902,25 @@ namespace Aurora.Services
 
             ILoginService loginService = m_registry.RequestModuleInterface<ILoginService>();
             IUserAccountService accountService = m_registry.RequestModuleInterface<IUserAccountService>();
+            IAgentConnector agentConnector = Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>();
             UserAccount account = null;
             OSDMap resp = new OSDMap();
             resp["Verified"] = OSD.FromBoolean(false);
 
-            if (accountService == null || CheckIfUserExists(map)["Verified"] != true)
+            if (agentConnector == null || accountService == null || CheckIfUserExists(map)["Verified"] != true)
             {
                 return resp;
             }
 
-            account = m_registry.RequestModuleInterface<IUserAccountService>().GetUserAccount(UUID.Zero, Name);
+            account = accountService.GetUserAccount(UUID.Zero, Name);
 
             //Null means it went through without an errorz
             if (loginService.VerifyClient(account.PrincipalID, Name, "UserAccount", Password, account.ScopeID))
             {
-                account = m_registry.RequestModuleInterface<IUserAccountService> ().GetUserAccount (UUID.Zero, Name);
+                account = accountService.GetUserAccount(UUID.Zero, Name);
                 if (asAdmin)
                 {
-                    IAgentInfo agent = Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>().GetAgent(account.PrincipalID);
+                    IAgentInfo agent = agentConnector.GetAgent(account.PrincipalID);
                     if (agent.OtherAgentInformation["WebUIEnabled"].AsBoolean() == false)
                     {
                         return resp;
@@ -1102,6 +1103,7 @@ namespace Aurora.Services
             {
                 user.Name = map["Name"].AsString();
                 resp["Stored" ] = OSD.FromBoolean(accountService.StoreUserAccount(user));
+                accountService.CacheAccount(user);
             }
 
             return resp;
