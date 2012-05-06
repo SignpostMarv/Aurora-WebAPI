@@ -31,3 +31,7 @@ Copy WebUI/WebUI.ini to your ~/Aurora-Sim/bin/ directory/AuroraServerConfigurati
 
 ## For standalone mode (just running Aurora.exe)
 Copy WebUI/WebUI.ini to your ~/Aurora-Sim/bin/ directory/Configuration/Modules directory
+
+# Notes
+
+* DeleteUser currently performs a perma-ban action instead of removing the user from the database.

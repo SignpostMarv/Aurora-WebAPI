@@ -1361,7 +1361,7 @@ namespace Aurora.Services
 
             if (GetAgent != null)
             {
-                GetAgent.Flags &= ~IAgentFlags.PermBan;
+                GetAgent.Flags |= IAgentFlags.PermBan;
                 Aurora.DataManager.DataManager.RequestPlugin<IAgentConnector>().UpdateAgent(GetAgent);
             }
             return resp;
