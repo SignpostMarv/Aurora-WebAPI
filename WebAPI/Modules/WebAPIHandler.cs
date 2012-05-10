@@ -29,6 +29,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Drawing;
 using System.Drawing.Text;
 using System.Drawing.Drawing2D;
@@ -461,6 +462,7 @@ namespace Aurora.Services
         protected OSDMap GridInfo;
         private UUID AdminAgentID;
         private Dictionary<string, MethodInfo> APIMethods = new Dictionary<string, MethodInfo>();
+        private ExpiringCache<string, string> authNonces;
 
         public WebAPIHandler_HTTP_GET(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID)
             : base("GET", httpPath)
@@ -470,6 +472,7 @@ namespace Aurora.Services
             m_password = Util.Md5Hash(pass);
             GridInfo = gridInfo;
             AdminAgentID = adminAgentID;
+            authNonces = new ExpiringCache<string, string>();
             MethodInfo[] methods = this.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             for (uint i = 0; i < methods.Length; ++i)
             {
@@ -510,6 +513,7 @@ namespace Aurora.Services
             OSDMap resp = new OSDMap();
             try
             {
+
                 OSDMap map = new OSDMap();
                 foreach (string key in httpRequest.Query.Keys)
                 {
@@ -532,7 +536,18 @@ namespace Aurora.Services
                 }
                 else
                 {
-                    MainConsole.Instance.Debug("Password does not match");
+                    string opaque = UUID.Random().ToString();
+                    string nonce = UUID.Random().ToString();
+                    authNonces.Add(opaque, nonce, 5000);
+                    httpResponse.StatusCode = 401;
+                    httpResponse.StatusDescription = "Unauthorized";
+                    string digestHeader = "Digest: " + string.Join(", ", new string[]{
+                        "realm=\"webapi@aurora\"",
+                        "qop=\"auth\"",
+                        "nonce=\"" + nonce + "\"",
+                        "opaque=\"" + opaque + "\""
+                    });
+                    httpResponse.AddHeader("WWW-Authenticate", digestHeader);
                 }
             }
             catch (Exception e)
@@ -550,7 +565,60 @@ namespace Aurora.Services
 
         private bool ValidateUser(OSHttpRequest request, OSDMap map)
         {
-            return (map.ContainsKey("WebPassword") && (map["WebPassword"] == m_password));
+            if ((new List<string>(request.Headers.AllKeys)).Contains("authorization"))
+            {
+                string auth = request.Headers["authorization"];
+                if (auth.Substring(0, 7) == "Digest ")
+                {
+                    string[] authBits = Regex.Split(auth.Substring(7), ", ");
+                    Dictionary<string, string> authorization = new Dictionary<string, string>(authBits.Length);
+                    Regex authBitRegex = new Regex("^\".+\"$");
+                    foreach(string authBit in authBits){
+                        int pos = authBit.IndexOf('=');
+                        if (pos >= 0)
+                        {
+                            authorization[authBit.Substring(0, pos)] = authBitRegex.IsMatch(authBit.Substring(pos + 1)) ? authBit.Substring(pos + 2, authBit.Length - pos - 3) : authBit.Substring(pos + 1);
+                        }
+                    }
+                    string storednonce;
+                    if (
+                        authorization.ContainsKey("username") && 
+                        authorization.ContainsKey("realm") && 
+                        authorization.ContainsKey("uri") && 
+                        authorization.ContainsKey("qop") && 
+                        authorization.ContainsKey("nonce") && 
+                        authorization.ContainsKey("nc") && 
+                        authorization.ContainsKey("cnonce") && 
+                        authorization.ContainsKey("opaque") &&
+                        authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
+                        authorization["nonce"] == storednonce
+                    )
+                    {
+                        authNonces.Remove(authorization["opaque"]);
+                        string HA1 = Util.Md5Hash(string.Join(":", new string[]{
+                            authorization["username"],
+                            authorization["realm"],
+                            m_password
+                        }));
+                        string HA2 = Util.Md5Hash("GET:" + authorization["uri"]);
+                        string response = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
+                            HA1,
+                            authorization["nonce"],
+                            authorization["nc"],
+                            authorization["cnonce"],
+                            "auth",
+                            HA2
+                        })) : Util.Md5Hash(string.Join(":", new string[]{
+                            HA1,
+                            authorization["nonce"],
+                            HA2
+                        }));
+                        return (response == authorization["response"]);
+                    }
+                }
+            }
+            return false;
+//            return (map.ContainsKey("WebPassword") && (map["WebPassword"] == m_password));
         }
 
         #endregion
