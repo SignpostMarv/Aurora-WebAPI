@@ -140,7 +140,7 @@ namespace Aurora.Services
                 return false;
             }
 
-            m_Handler = config.GetString("WebAPIHandler", string.Empty);
+            m_Handler = config.GetString("Handler", string.Empty);
             m_HandlerPassword = config.GetString("Password", string.Empty);
             m_HandlerPort = config.GetUInt("Port", 0);
             m_TexturePort = config.GetUInt("TextureServerPort", 0);
