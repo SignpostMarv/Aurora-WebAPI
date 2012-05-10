@@ -61,7 +61,7 @@ using RegionFlags = Aurora.Framework.RegionFlags;
 
 namespace Aurora.Services
 {
-    public class WebUIConnector : IAuroraDataPlugin
+    public class WebAPIConnector : IAuroraDataPlugin
     {
         private bool m_enabled = false;
         public bool Enabled
@@ -125,7 +125,7 @@ namespace Aurora.Services
         {
             get
             {
-                return "WebUIConnector";
+                return "WebAPIConnector";
             }
         }
 
@@ -139,10 +139,10 @@ namespace Aurora.Services
                 return;
             }
 
-            m_Handler = config.GetString("WebUIHandler", string.Empty);
-            m_HandlerPassword = config.GetString("WebUIHandlerPassword", string.Empty);
-            m_HandlerPort = config.GetUInt("WebUIHandlerPort", 0);
-            m_TexturePort = config.GetUInt("WebUIHandlerTextureServerPort", 0);
+            m_Handler = config.GetString("WebAPIHandler", string.Empty);
+            m_HandlerPassword = config.GetString("WebAPIHandlerPassword", string.Empty);
+            m_HandlerPort = config.GetUInt("WebAPIHandlerPort", 0);
+            m_TexturePort = config.GetUInt("WebAPIHandlerTextureServerPort", 0);
 
             if (Handler == string.Empty || HandlerPassword == string.Empty || HandlerPort == 0 || TexturePort == 0)
             {
@@ -168,9 +168,9 @@ namespace Aurora.Services
         #endregion
     }
 
-    public class WebUIHandler : IService
+    public class WebAPIHandler : IService
     {
-        private WebUIConnector m_connector;
+        private WebAPIConnector m_connector;
 
         public IHttpServer m_server = null;
         public IHttpServer m_server2 = null;
@@ -192,7 +192,7 @@ namespace Aurora.Services
 
         public void Start(IConfigSource config, IRegistryCore registry)
         {
-            m_connector = DataManager.DataManager.RequestPlugin<WebUIConnector>();
+            m_connector = DataManager.DataManager.RequestPlugin<WebAPIConnector>();
             if (m_connector == null || m_connector.Enabled == false || m_connector.Handler != Name)
             {
                 return;
@@ -202,16 +202,16 @@ namespace Aurora.Services
             string name = handlerConfig.GetString(Name, "");
             string Password = handlerConfig.GetString(Name + "Password", String.Empty);
             bool runLocally = handlerConfig.GetBoolean("RunLocally", false);
-            uint httpPort = handlerConfig.GetUInt("WebUIHTTPPort", 80);
+            uint httpPort = handlerConfig.GetUInt("WebAPIHTTPPort", 80);
             string phpBinPath = handlerConfig.GetString("phpBinPath", string.Empty);
-            UUID.TryParse(handlerConfig.GetString("WebUIAdminID", UUID.Zero.ToString()), out AdminAgentID);
+            UUID.TryParse(handlerConfig.GetString("WebAPIAdminID", UUID.Zero.ToString()), out AdminAgentID);
 
             if (name != Name || (!runLocally && Password == string.Empty) || (runLocally && phpBinPath == string.Empty))
             {
-                MainConsole.Instance.Warn("[WebUI] module not loaded");
+                MainConsole.Instance.Warn("[WebAPI]: module not loaded");
                 return;
             }
-            MainConsole.Instance.Info("[WebUI] module loaded");
+            MainConsole.Instance.Info("[WebAPI]: module loaded");
 
             m_registry = registry;
 
@@ -239,16 +239,16 @@ namespace Aurora.Services
 
             m_server = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "Port", m_connector.HandlerPort));
             //This handler allows sims to post CAPS for their sims on the CAPS server.
-            m_server.AddStreamHandler(new WebUIHTTPHandler(this, m_connector.HandlerPassword, registry, gridInfo, AdminAgentID, runLocally, httpPort));
+            m_server.AddStreamHandler(new WebAPIHTTPHandler(this, m_connector.HandlerPassword, registry, gridInfo, AdminAgentID, runLocally, httpPort));
             m_server2 = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "TextureServerPort", m_connector.TexturePort));
             m_server2.AddHTTPHandler("GridTexture", OnHTTPGetTextureImage);
             m_server2.AddHTTPHandler("MapTexture", OnHTTPGetMapImage);
             gridInfo[Name + "TextureServer"] = m_server2.ServerURI;
 
-            MainConsole.Instance.Commands.AddCommand("webui promote user", "Grants the specified user administrative powers within webui.", "webui promote user", PromoteUser);
-            MainConsole.Instance.Commands.AddCommand("webui demote user", "Revokes administrative powers for webui from the specified user.", "webui demote user", DemoteUser);
-            MainConsole.Instance.Commands.AddCommand("webui add group as news source", "Sets a group as a news source so in-world group notices can be used as a publishing tool for the website.", "webui add group as news source", AddGroupAsNewsSource);
-            MainConsole.Instance.Commands.AddCommand("webui remove group as news source", "Removes a group as a news source so it's notices will stop showing up on the news page.", "webui remove group as news source", RemoveGroupAsNewsSource);
+            MainConsole.Instance.Commands.AddCommand("webapi promote user", "Grants the specified user administrative powers within WebAPI.", "webapi promote user", PromoteUser);
+            MainConsole.Instance.Commands.AddCommand("webapi demote user", "Revokes administrative powers for WebAPI from the specified user.", "webapi demote user", DemoteUser);
+            MainConsole.Instance.Commands.AddCommand("webapi add group as news source", "Sets a group as a news source so in-world group notices can be used as a publishing tool for the website.", "webapi add group as news source", AddGroupAsNewsSource);
+            MainConsole.Instance.Commands.AddCommand("webapi remove group as news source", "Removes a group as a news source so it's notices will stop showing up on the news page.", "webapi remove group as news source", RemoveGroupAsNewsSource);
         }
 
         private void SetUpWebUIPHP(uint port, string phpBinPath)
@@ -271,7 +271,7 @@ namespace Aurora.Services
             if (keysvals["method"].ToString() != "GridTexture")
                 return reply;
 
-            MainConsole.Instance.Debug("[WebUI]: Sending image jpeg");
+            MainConsole.Instance.Debug("[WeAPI]: Sending image jpeg");
             int statuscode = 200;
             byte[] jpeg = new byte[0];
             IAssetService m_AssetService = m_registry.RequestModuleInterface<IAssetService>();
@@ -311,7 +311,7 @@ namespace Aurora.Services
             catch (Exception)
             {
                 // Dummy!
-                MainConsole.Instance.Warn("[WebUI]: Unable to post image.");
+                MainConsole.Instance.Warn("[WebAPI]: Unable to post image.");
             }
             finally
             {
@@ -349,7 +349,7 @@ namespace Aurora.Services
             int x = (keysvals.ContainsKey("x")) ? (int)float.Parse(keysvals["x"].ToString()) : 0;
             int y = (keysvals.ContainsKey("y")) ? (int)float.Parse(keysvals["y"].ToString()) : 0;
 
-            MainConsole.Instance.Debug("[WebUI]: Sending map image jpeg");
+            MainConsole.Instance.Debug("[WebAPI]: Sending map image jpeg");
             int statuscode = 200;
             byte[] jpeg = new byte[0];
             
@@ -474,7 +474,7 @@ namespace Aurora.Services
 
         #region Console Commands
 
-        #region WebUI Admin
+        #region WebAPI Admin
 
         private void PromoteUser (string[] cmd)
         {
@@ -538,14 +538,14 @@ namespace Aurora.Services
             GroupRecord group = Aurora.DataManager.DataManager.RequestPlugin<IGroupsServiceConnector>().GetGroupRecord(AdminAgentID, UUID.Zero, name);
             if (group == null)
             {
-                MainConsole.Instance.Warn("[WebUI] You must create the group before adding it as a news source");
+                MainConsole.Instance.Warn("[WebAPI] You must create the group before adding it as a news source");
                 return;
             }
             IGenericsConnector generics = Aurora.DataManager.DataManager.RequestPlugin<IGenericsConnector>();
             OSDMap useValue = new OSDMap();
             useValue["Use"] = OSD.FromBoolean(true);
-            generics.AddGeneric(group.GroupID, "Group", "WebUI_newsSource", useValue);
-            MainConsole.Instance.Warn(string.Format("[WebUI]: \"{0}\" was added as a news source", group.GroupName));
+            generics.AddGeneric(group.GroupID, "Group", "WebAPI_newsSource", useValue);
+            MainConsole.Instance.Warn(string.Format("[WebAPI]: \"{0}\" was added as a news source", group.GroupName));
         }
 
         private void RemoveGroupAsNewsSource(string[] cmd)
@@ -554,12 +554,12 @@ namespace Aurora.Services
             GroupRecord group = Aurora.DataManager.DataManager.RequestPlugin<IGroupsServiceConnector>().GetGroupRecord(AdminAgentID, UUID.Zero, name);
             if (group == null)
             {
-                MainConsole.Instance.Warn(string.Format("[WebUI] \"{0}\" did not appear to be a Group, cannot remove as news source", name));
+                MainConsole.Instance.Warn(string.Format("[WebAPI] \"{0}\" did not appear to be a Group, cannot remove as news source", name));
                 return;
             }
             IGenericsConnector generics = Aurora.DataManager.DataManager.RequestPlugin<IGenericsConnector>();
             generics.RemoveGeneric(group.GroupID, "Group", "WebUI_newsSource");
-            MainConsole.Instance.Warn(string.Format("[WebUI]: \"{0}\" was removed as a news source", group.GroupName));
+            MainConsole.Instance.Warn(string.Format("[WebAPI]: \"{0}\" was removed as a news source", group.GroupName));
         }
 
         #endregion
@@ -567,9 +567,9 @@ namespace Aurora.Services
         #endregion
     }
 
-    public class WebUIHTTPHandler : BaseStreamHandler
+    public class WebAPIHTTPHandler : BaseStreamHandler
     {
-        protected WebUIHandler WebUI;
+        protected WebAPIHandler WebAPI;
         protected string m_password;
         protected IRegistryCore m_registry;
         protected OSDMap GridInfo;
@@ -578,10 +578,10 @@ namespace Aurora.Services
         private bool m_runLocal = true;
         private uint m_localPort;
 
-        public WebUIHTTPHandler(WebUIHandler webui, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID, bool runLocally, uint port)
-            : base("POST", "/WEBUI")
+        public WebAPIHTTPHandler(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID, bool runLocally, uint port)
+            : base("POST", "/WEBAPI")
         {
-            WebUI = webui;
+            WebAPI = webapi;
             m_registry = reg;
             m_password = Util.Md5Hash(pass);
             GridInfo = gridInfo;
@@ -607,7 +607,7 @@ namespace Aurora.Services
             sr.Close();
             body = body.Trim();
 
-            MainConsole.Instance.TraceFormat("[WebUI]: query String: {0}", body);
+            MainConsole.Instance.TraceFormat("[WebAPI]: query String: {0}", body);
             string method = string.Empty;
             OSDMap resp = new OSDMap();
             try
@@ -628,7 +628,7 @@ namespace Aurora.Services
                     }
                     else
                     {
-                        MainConsole.Instance.TraceFormat("[WebUI] Unsupported method called ({0})", method);
+                        MainConsole.Instance.TraceFormat("[WebAPI] Unsupported method called ({0})", method);
                     }
                 }
                 else
@@ -638,7 +638,7 @@ namespace Aurora.Services
             }
             catch (Exception e)
             {
-                MainConsole.Instance.TraceFormat("[WebUI] Exception thrown: " + e.ToString());
+                MainConsole.Instance.TraceFormat("[WebAPI] Exception thrown: " + e.ToString());
             }
             if(resp.Count == 0){
                 resp.Add("response", OSD.FromString("Failed"));
@@ -663,7 +663,7 @@ namespace Aurora.Services
 
         #endregion
 
-        #region WebUI API methods
+        #region WebAPI methods
 
         #region Grid
 
@@ -738,7 +738,7 @@ namespace Aurora.Services
                 }
                 else
                 {
-                    MainConsole.Instance.DebugFormat("[WebUI]: Could not set home position for user {0}, region \"{1}\" did not produce a result from the grid service", user.PrincipalID.ToString(), HomeRegion);
+                    MainConsole.Instance.DebugFormat("[WebAPI]: Could not set home position for user {0}, region \"{1}\" did not produce a result from the grid service", user.PrincipalID.ToString(), HomeRegion);
                 }
             }
 
@@ -812,7 +812,7 @@ namespace Aurora.Services
             OSDArray names = new OSDArray();
             OSDArray snapshot = new OSDArray();
 
-            MainConsole.Instance.DebugFormat("[WebUI] {0} avatar archives found", temp.Count);
+            MainConsole.Instance.DebugFormat("[WebAPI]: {0} avatar archives found", temp.Count);
 
             foreach (AvatarArchive a in temp)
             {
@@ -1680,7 +1680,7 @@ namespace Aurora.Services
 
             resp["AbuseReports"] = AbuseReports;
             resp["Start"] = OSD.FromInteger(start);
-            resp["Count"] = OSD.FromInteger(count); // we're not using the AbuseReports.Count because client implementations of the WebUI API can check the count themselves. This is just for showing the input.
+            resp["Count"] = OSD.FromInteger(count); // we're not using the AbuseReports.Count because client implementations of the WebAPI can check the count themselves. This is just for showing the input.
             resp["Active"] = OSD.FromBoolean(active);
 
             return resp;
@@ -2771,7 +2771,7 @@ namespace Aurora.Services
                 Hashtable args = new Hashtable(2);
                 args["method"] = "GridTexture";
                 args["uuid"] = UUID.Parse(map["Texture"].ToString());
-                Hashtable texture = WebUI.OnHTTPGetTextureImage(args);
+                Hashtable texture = WebAPI.OnHTTPGetTextureImage(args);
                 if (texture.ContainsKey("str_response_string"))
                 {
                     resp["Size"] = OSD.FromInteger(Convert.FromBase64String(texture["str_response_string"].ToString()).Length);
