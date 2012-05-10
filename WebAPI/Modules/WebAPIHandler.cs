@@ -38,6 +38,7 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Reflection;
 using System.Timers;
+using System.Web;
 
 using BitmapProcessing;
 
@@ -179,7 +180,7 @@ namespace Aurora.Services
 
         public IHttpServer m_server = null;
         public IHttpServer m_server2 = null;
-        string m_servernick = "hippogrid";
+        string m_servernick = "Aurora-Sim";
         protected IRegistryCore m_registry;
 
         protected UUID AdminAgentID = UUID.Zero;
@@ -452,6 +453,8 @@ namespace Aurora.Services
 
     public class WebAPIHandler_HTTP_GET : BaseStreamHandler
     {
+        const string httpPath = "/webapi";
+
         protected WebAPIHandler WebAPI;
         protected string m_password;
         protected IRegistryCore m_registry;
@@ -460,7 +463,7 @@ namespace Aurora.Services
         private Dictionary<string, MethodInfo> APIMethods = new Dictionary<string, MethodInfo>();
 
         public WebAPIHandler_HTTP_GET(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID)
-            : base("GET", "/WEBAPI")
+            : base("GET", httpPath)
         {
             WebAPI = webapi;
             m_registry = reg;
@@ -481,21 +484,42 @@ namespace Aurora.Services
 
         public override byte[] Handle(string path, Stream requestData, OSHttpRequest httpRequest, OSHttpResponse httpResponse)
         {
-            StreamReader sr = new StreamReader(requestData);
-            string body = sr.ReadToEnd();
-            sr.Close();
-            body = body.Trim();
 
-            MainConsole.Instance.TraceFormat("[WebAPI]: query String: {0}", body);
-            string method = string.Empty;
+            string methodPath = path.Substring(httpPath.Length).Trim();
+            if (methodPath != string.Empty && methodPath.Substring(0, 1) == "/")
+            {
+                methodPath = methodPath.Substring(1);
+            }
+
+            string[] parts = new string[0];
+            if (methodPath != string.Empty)
+            {
+                parts = methodPath.Split('/');
+            }
+            for (int i = 0; i < parts.Length; ++i)
+            {
+                parts[i] = HttpUtility.UrlDecode(parts[i]);
+            }
+
+            if (parts.Length == 0)
+            {
+                return new byte[0];
+            }
+
+            string method = parts.Length < 2 ? string.Empty : parts[1];
             OSDMap resp = new OSDMap();
             try
             {
-                OSDMap map = (OSDMap)OSDParser.DeserializeJson(body);
+                OSDMap map = new OSDMap();
+                foreach (KeyValuePair<string, string> kvp in httpRequest.Query)
+                {
+                    map[HttpUtility.UrlDecode(kvp.Key)] = OSDParser.DeserializeJson(HttpUtility.UrlDecode(kvp.Value));
+                }
+                string body = OSDParser.SerializeJsonString(map);
+                MainConsole.Instance.TraceFormat("[WebAPI]: query String: {0}", body);
                 //Make sure that the person who is calling can access the web service
                 if (ValidateUser(httpRequest, map))
                 {
-                    method = map["Method"].AsString();
                     if (APIMethods.ContainsKey(method))
                     {
                         object[] args = new object[1] { map };
@@ -1827,7 +1851,7 @@ namespace Aurora.Services
         private Dictionary<string, MethodInfo> APIMethods = new Dictionary<string, MethodInfo>();
 
         public WebAPIHandler_HTTP_POST(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID)
-            : base("POST", "/WEBAPI")
+            : base("POST", "/webapi")
         {
             WebAPI = webapi;
             m_registry = reg;
