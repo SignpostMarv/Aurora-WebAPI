@@ -511,9 +511,9 @@ namespace Aurora.Services
             try
             {
                 OSDMap map = new OSDMap();
-                foreach (KeyValuePair<string, string> kvp in httpRequest.Query)
+                foreach (string key in httpRequest.Query.Keys)
                 {
-                    map[HttpUtility.UrlDecode(kvp.Key)] = OSDParser.DeserializeJson(HttpUtility.UrlDecode(kvp.Value));
+                    map[HttpUtility.UrlDecode(key)] = ((OSDMap)OSDParser.DeserializeJson("{\"foo\":" + HttpUtility.UrlDecode(httpRequest.Query[key].ToString()) + "}"))["foo"];
                 }
                 string body = OSDParser.SerializeJsonString(map);
                 MainConsole.Instance.TraceFormat("[WebAPI]: query String: {0}", body);
