@@ -3,7 +3,8 @@ All releases are available as source tags on GitHub.
 
 ## v3.x (master branch)
 * *v3.x is currently under development and will likely not work.*
-* v3.x runs under [Aurora-Sim master](https://github.com/aurora-sim/Aurora-Sim/tree/WebAPI-v3)
+* v3.x runs under [Aurora-Sim master](https://github.com/aurora-sim/Aurora-Sim/tree/master)
+* v3.x release candidates work with [libAurora.php](https://github.com/aurora-sim/libAurora.php/tree/WebAPI-v3)
 
 ## v2.x
 
