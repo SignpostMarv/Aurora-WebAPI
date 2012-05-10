@@ -237,7 +237,6 @@ namespace Aurora.Services
             m_server.AddStreamHandler(new WebAPIHTTPHandler(this, m_connector.HandlerPassword, registry, gridInfo, AdminAgentID));
             m_server2 = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "TextureServerPort", m_connector.TexturePort));
             m_server2.AddHTTPHandler("GridTexture", OnHTTPGetTextureImage);
-            m_server2.AddHTTPHandler("MapTexture", OnHTTPGetMapImage);
             gridInfo[Name + "TextureServer"] = m_server2.ServerURI;
 
             MainConsole.Instance.Commands.AddCommand("webapi promote user", "Grants the specified user administrative powers within WebAPI.", "webapi promote user", PromoteUser);
@@ -333,52 +332,6 @@ namespace Aurora.Services
             return reply;
         }
 
-        public Hashtable OnHTTPGetMapImage(Hashtable keysvals)
-        {
-            Hashtable reply = new Hashtable();
-
-            if (keysvals["method"].ToString() != "MapTexture")
-                return reply;
-
-            int zoom = (keysvals.ContainsKey("zoom")) ? int.Parse(keysvals["zoom"].ToString()) : 20;
-            int x = (keysvals.ContainsKey("x")) ? (int)float.Parse(keysvals["x"].ToString()) : 0;
-            int y = (keysvals.ContainsKey("y")) ? (int)float.Parse(keysvals["y"].ToString()) : 0;
-
-            MainConsole.Instance.Debug("[WebAPI]: Sending map image jpeg");
-            int statuscode = 200;
-            byte[] jpeg = new byte[0];
-            
-            MemoryStream imgstream = new MemoryStream();
-            Bitmap mapTexture = CreateZoomLevel(zoom, x, y);
-            EncoderParameters myEncoderParameters = new EncoderParameters();
-            myEncoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
-
-            // Save bitmap to stream
-            mapTexture.Save(imgstream, GetEncoderInfo("image/jpeg"), myEncoderParameters);
-
-            // Write the stream to a byte array for output
-            jpeg = imgstream.ToArray();
-
-            // Reclaim memory, these are unmanaged resources
-            // If we encountered an exception, one or more of these will be null
-            if (mapTexture != null)
-            {
-                mapTexture.Dispose();
-            }
-
-            if (imgstream != null)
-            {
-                imgstream.Close();
-                imgstream.Dispose();
-            }
-
-            reply["str_response_string"] = Convert.ToBase64String(jpeg);
-            reply["int_response_code"] = statuscode;
-            reply["content_type"] = "image/jpeg";
-
-            return reply;
-        }
-
         public Bitmap ResizeBitmap(Image b, int nWidth, int nHeight)
         {
             Bitmap newsize = new Bitmap(nWidth, nHeight);
@@ -388,68 +341,6 @@ namespace Aurora.Services
             temp.DrawString(m_servernick, new Font("Arial", 8, FontStyle.Regular), new SolidBrush(Color.FromArgb(90, 255, 255, 50)), new Point(2, 115));
 
             return newsize;
-        }
-
-        private Bitmap CreateZoomLevel(int zoomLevel, int centerX, int centerY)
-        {
-            if (!Directory.Exists("MapTiles"))
-                Directory.CreateDirectory("MapTiles");
-
-            string fileName = Path.Combine("MapTiles", "Zoom" + zoomLevel + "X" + centerX + "Y" + centerY + ".jpg");
-            if (File.Exists(fileName))
-            {
-                DateTime lastWritten = File.GetLastWriteTime(fileName);
-                if ((DateTime.Now - lastWritten).Minutes < 10) //10 min cache
-                    return (Bitmap)Bitmap.FromFile(fileName);
-            }
-
-            List<GridRegion> regions = m_registry.RequestModuleInterface<IGridService>().GetRegionRange(UUID.Zero,
-                    (int)(centerX * (int)Constants.RegionSize - (zoomLevel * (int)Constants.RegionSize)),
-                    (int)(centerX * (int)Constants.RegionSize + (zoomLevel * (int)Constants.RegionSize)),
-                    (int)(centerY * (int)Constants.RegionSize - (zoomLevel * (int)Constants.RegionSize)),
-                    (int)(centerY * (int)Constants.RegionSize + (zoomLevel * (int)Constants.RegionSize)));
-            List<Image> bitImages = new List<Image>();
-            List<FastBitmap> fastbitImages = new List<FastBitmap>();
-
-            foreach (GridRegion r in regions)
-            {
-                AssetBase texAsset = m_registry.RequestModuleInterface<IAssetService>().Get(r.TerrainImage.ToString());
-
-                if (texAsset != null)
-                {
-                    ManagedImage managedImage;
-                    Image image;
-                    if (OpenJPEG.DecodeToImage(texAsset.Data, out managedImage, out image))
-                    {
-                        bitImages.Add(image);
-                        fastbitImages.Add(new FastBitmap((Bitmap)image));
-                    }
-                }
-            }
-
-            int imageSize = 2560;
-            float zoomScale = (imageSize / zoomLevel);
-            Bitmap mapTexture = new Bitmap(imageSize, imageSize);
-            Graphics g = Graphics.FromImage(mapTexture);
-            Color seaColor = Color.FromArgb(29, 71, 95);
-            SolidBrush sea = new SolidBrush(seaColor);
-            g.FillRectangle(sea, 0, 0, imageSize, imageSize);
-
-            for (int i = 0; i < regions.Count; i++)
-            {
-                float x = ((regions[i].RegionLocX - (centerX * (float)Constants.RegionSize) + Constants.RegionSize / 2) / (float)Constants.RegionSize);
-                float y = ((regions[i].RegionLocY - (centerY * (float)Constants.RegionSize) + Constants.RegionSize / 2) / (float)Constants.RegionSize);
-
-                int regionWidth = regions[i].RegionSizeX / Constants.RegionSize;
-                int regionHeight = regions[i].RegionSizeY / Constants.RegionSize;
-                float posX = (x * zoomScale) + imageSize / 2;
-                float posY = (y * zoomScale) + imageSize / 2;
-                g.DrawImage(bitImages[i], posX, imageSize - posY, zoomScale * regionWidth, zoomScale * regionHeight); // y origin is top
-            }
-
-            mapTexture.Save(fileName, ImageFormat.Jpeg);
-
-            return mapTexture;
         }
 
         // From msdn
