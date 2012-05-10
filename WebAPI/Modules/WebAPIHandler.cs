@@ -506,7 +506,7 @@ namespace Aurora.Services
                 return new byte[0];
             }
 
-            string method = parts.Length < 2 ? string.Empty : parts[1];
+            string method = parts.Length < 1 ? string.Empty : parts[0];
             OSDMap resp = new OSDMap();
             try
             {
