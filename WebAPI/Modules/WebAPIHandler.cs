@@ -245,11 +245,6 @@ namespace Aurora.Services
             MainConsole.Instance.Commands.AddCommand("webapi remove group as news source", "Removes a group as a news source so it's notices will stop showing up on the news page.", "webapi remove group as news source", RemoveGroupAsNewsSource);
         }
 
-        private void SetUpWebUIPHP(uint port, string phpBinPath)
-        {
-            HttpServer.HttpModules.AdvancedFileModule.CreateHTTPServer(Util.BasePathCombine("data//WebUI//"), "/", @phpBinPath, port, false);
-        }
-
         public void FinishedStartup()
         {
         }
