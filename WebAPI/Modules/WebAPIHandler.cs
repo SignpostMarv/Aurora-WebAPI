@@ -201,12 +201,9 @@ namespace Aurora.Services
             IConfig handlerConfig = config.Configs["Handlers"];
             string name = handlerConfig.GetString(Name, "");
             string Password = handlerConfig.GetString(Name + "Password", String.Empty);
-            bool runLocally = handlerConfig.GetBoolean("RunLocally", false);
-            uint httpPort = handlerConfig.GetUInt("WebAPIHTTPPort", 80);
-            string phpBinPath = handlerConfig.GetString("phpBinPath", string.Empty);
             UUID.TryParse(handlerConfig.GetString("WebAPIAdminID", UUID.Zero.ToString()), out AdminAgentID);
 
-            if (name != Name || (!runLocally && Password == string.Empty) || (runLocally && phpBinPath == string.Empty))
+            if (name != Name || Password == string.Empty)
             {
                 MainConsole.Instance.Warn("[WebAPI]: module not loaded");
                 return;
@@ -219,11 +216,6 @@ namespace Aurora.Services
             if (GridInfoConfig != null)
             {
                 m_servernick = GridInfoConfig.GetString("gridnick", m_servernick);
-            }
-
-            if (runLocally)
-            {
-                SetUpWebUIPHP(httpPort, phpBinPath);
             }
 
             OSDMap gridInfo = new OSDMap();
@@ -239,7 +231,7 @@ namespace Aurora.Services
 
             m_server = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "Port", m_connector.HandlerPort));
             //This handler allows sims to post CAPS for their sims on the CAPS server.
-            m_server.AddStreamHandler(new WebAPIHTTPHandler(this, m_connector.HandlerPassword, registry, gridInfo, AdminAgentID, runLocally, httpPort));
+            m_server.AddStreamHandler(new WebAPIHTTPHandler(this, m_connector.HandlerPassword, registry, gridInfo, AdminAgentID));
             m_server2 = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "TextureServerPort", m_connector.TexturePort));
             m_server2.AddHTTPHandler("GridTexture", OnHTTPGetTextureImage);
             m_server2.AddHTTPHandler("MapTexture", OnHTTPGetMapImage);
@@ -575,10 +567,8 @@ namespace Aurora.Services
         protected OSDMap GridInfo;
         private UUID AdminAgentID;
         private Dictionary<string, MethodInfo> APIMethods = new Dictionary<string, MethodInfo>();
-        private bool m_runLocal = true;
-        private uint m_localPort;
 
-        public WebAPIHTTPHandler(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID, bool runLocally, uint port)
+        public WebAPIHTTPHandler(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID)
             : base("POST", "/WEBAPI")
         {
             WebAPI = webapi;
@@ -586,8 +576,6 @@ namespace Aurora.Services
             m_password = Util.Md5Hash(pass);
             GridInfo = gridInfo;
             AdminAgentID = adminAgentID;
-            m_runLocal = runLocally;
-            m_localPort = port;
             MethodInfo[] methods = this.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             for (uint i = 0; i < methods.Length; ++i)
             {
@@ -650,15 +638,7 @@ namespace Aurora.Services
 
         private bool ValidateUser(OSHttpRequest request, OSDMap map)
         {
-            if(!m_runLocal)
-                if (map.ContainsKey("WebPassword") && (map["WebPassword"] == m_password))
-                    return true;
-            if (m_runLocal)
-            {
-                if (request.RemoteIPEndPoint.Address.Equals(IPAddress.Loopback))
-                    return true;
-            }
-            return false;
+            return (map.ContainsKey("WebPassword") && (map["WebPassword"] == m_password));
         }
 
         #endregion
