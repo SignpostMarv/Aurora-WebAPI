@@ -129,40 +129,45 @@ namespace Aurora.Services
             }
         }
 
-        private void handleConfig(IConfigSource m_config)
+        private bool handleConfig(IConfigSource m_config)
         {
-            IConfig config = m_config.Configs["Handlers"];
+            IConfig config = m_config.Configs["WebAPI"];
             if (config == null)
             {
                 m_enabled = false;
                 Warn("not loaded, no configuration found.");
-                return;
+                return false;
             }
 
             m_Handler = config.GetString("WebAPIHandler", string.Empty);
-            m_HandlerPassword = config.GetString("WebAPIHandlerPassword", string.Empty);
-            m_HandlerPort = config.GetUInt("WebAPIHandlerPort", 0);
-            m_TexturePort = config.GetUInt("WebAPIHandlerTextureServerPort", 0);
+            m_HandlerPassword = config.GetString("Password", string.Empty);
+            m_HandlerPort = config.GetUInt("Port", 0);
+            m_TexturePort = config.GetUInt("TextureServerPort", 0);
 
             if (Handler == string.Empty || HandlerPassword == string.Empty || HandlerPort == 0 || TexturePort == 0)
             {
                 m_enabled = false;
                 Warn("Not loaded, configuration missing.");
-                return;
+                return false;
             }
 
             m_enabled = true;
+            return true;
         }
 
         public void Initialize(IGenericData GenericData, IConfigSource source, IRegistryCore simBase, string DefaultConnectionString)
         {
-            handleConfig(source);
-            if (!Enabled)
+            if (handleConfig(source))
             {
-                Warn("not loaded, disabled in config.");
-                return;
+                if (!Enabled)
+                {
+                    Warn("not loaded, disabled in config.");
+                }
+                else
+                {
+                    DataManager.DataManager.RegisterPlugin(this);
+                }
             }
-            DataManager.DataManager.RegisterPlugin(this);
         }
 
         #endregion
@@ -199,11 +204,9 @@ namespace Aurora.Services
             }
 
             IConfig handlerConfig = config.Configs["Handlers"];
-            string name = handlerConfig.GetString(Name, "");
-            string Password = handlerConfig.GetString(Name + "Password", String.Empty);
             UUID.TryParse(handlerConfig.GetString("WebAPIAdminID", UUID.Zero.ToString()), out AdminAgentID);
 
-            if (name != Name || Password == string.Empty)
+            if (m_connector.Handler != Name || m_connector.HandlerPassword == string.Empty)
             {
                 MainConsole.Instance.Warn("[WebAPI]: module not loaded");
                 return;
