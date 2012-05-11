@@ -108,6 +108,13 @@ namespace Aurora.Services
         bool LogAPICall(UUID user, string method);
 
         /// <summary>
+        /// Clears the API access log
+        /// </summary>
+        /// <param name="staleOnly">if true only clears logs older than an hour, if false clears entire log</param>
+        /// <returns>indicates whether the action was successful</returns>
+        bool ClearLog(bool staleOnly);
+
+        /// <summary>
         /// Determines if the specified user can access the specified method.
         /// </summary>
         /// <param name="user"></param>
@@ -315,11 +322,27 @@ namespace Aurora.Services
             uint ut = Utils.DateTimeToUnixTime(now);
             DateTime origin = new DateTime(1970, 1, 1, 0, 0, 0);
             origin.AddSeconds(ut);
-            return GD.Insert(m_table_accessLog, new object[3]{
+            return GD.Insert(c_table_accessLog, new object[3]{
                 user,
                 method,
                 ut + (((now.Ticks - origin.Ticks) / 10000000.0) % 1)
             });
+        }
+
+        public bool ClearLog(bool staleOnly)
+        {
+            QueryFilter filter = new QueryFilter();
+            if (staleOnly)
+            {
+                DateTime now = DateTime.Now;
+                uint ut = Utils.DateTimeToUnixTime(now);
+                DateTime origin = new DateTime(1970, 1, 1, 0, 0, 0);
+                origin.AddSeconds(ut);
+                double staleTime = ut + (((now.Ticks - origin.Ticks) / 10000000.0) % 1) - 3600;
+                filter.andLessThanEqFilters["loggedat"] = staleTime;
+            }
+
+            return GD.Delete(c_table_accessLog, staleOnly ? filter : null);
         }
 
         public bool AllowAPICall(UUID user, string method)
