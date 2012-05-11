@@ -484,6 +484,9 @@ namespace Aurora.Services
             MainConsole.Instance.Commands.AddCommand("webapi add group as news source", "Sets a group as a news source so in-world group notices can be used as a publishing tool for the website.", "webapi add group as news source", AddGroupAsNewsSource);
             MainConsole.Instance.Commands.AddCommand("webapi remove group as news source", "Removes a group as a news source so it's notices will stop showing up on the news page.", "webapi remove group as news source", RemoveGroupAsNewsSource);
             MainConsole.Instance.Commands.AddCommand("webapi list methods", "List API methods", "webapi list methods", ListAPImethods);
+            MainConsole.Instance.Commands.AddCommand("webapi get access token", "Gets the current access token to the API for the specified user", "webapi get access token", GetAccessToken);
+            MainConsole.Instance.Commands.AddCommand("webapi get new access token", "Gets a new access token to the API for the specified user", "webapi get new access token", GetNewAccessToken);
+            MainConsole.Instance.Commands.AddCommand("webapi clear log", "Clears the API access log", "webapi clear log [staleonly]", ClearLog);
         }
 
         public void FinishedStartup()
@@ -508,6 +511,45 @@ namespace Aurora.Services
                 }
             }
             MainConsole.Instance.Info("[" + Name + "]: " + resp);
+        }
+
+        private void GetAccessToken(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                MainConsole.Instance.InfoFormat("[" + Name + "]: Access token for {0} : {1}", name, m_connector.GetAccessToken(resp["UUID"].AsUUID()));
+            }
+        }
+
+        private void GetNewAccessToken(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                MainConsole.Instance.InfoFormat("[" + Name + "]: Access token for {0} : {1}", name, m_connector.GetNewAccessToken(resp["UUID"].AsUUID()));
+            }
+        }
+
+        private void ClearLog(string[] cmd)
+        {
+            m_connector.ClearLog(cmd.Length == 4 && cmd[3] == "staleonly");
         }
 
         #endregion
