@@ -63,6 +63,30 @@ using RegionFlags = Aurora.Framework.RegionFlags;
 
 namespace Aurora.Services
 {
+    public enum WebAPIHttpMethod
+    {
+        GET,
+        POST
+    }
+
+    public class WebAPIMethod : Attribute
+    {
+        private WebAPIHttpMethod m_httpMethod;
+
+        public WebAPIMethod(WebAPIHttpMethod HttpMethod)
+        {
+            m_httpMethod = HttpMethod;
+        }
+
+        public WebAPIHttpMethod HttpMethod
+        {
+            get
+            {
+                return m_httpMethod;
+            }
+        }
+    }
+
     public interface IWebAPIConnector
     {
         bool Enabled { get; }
