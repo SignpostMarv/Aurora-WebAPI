@@ -63,7 +63,83 @@ using RegionFlags = Aurora.Framework.RegionFlags;
 
 namespace Aurora.Services
 {
-    public class WebAPIConnector : IAuroraDataPlugin
+    public interface IWebAPIConnector
+    {
+        bool Enabled { get; }
+
+        string Handler { get; }
+
+        string HandlerPassword { get; }
+
+        uint HandlerPort { get; }
+
+        uint TexturePort { get; }
+
+        /// <summary>
+        /// Log the user's access to the API. Will be used for throttling.
+        /// </summary>
+        /// <param name="user"></param>
+        /// <param name="method"></param>
+        /// <returns>indicates whether the logging was successful</returns>
+        bool LogAPICall(UUID user, string method);
+
+        /// <summary>
+        /// Determines if the specified user can access the specified method.
+        /// </summary>
+        /// <param name="user"></param>
+        /// <param name="method"></param>
+        /// <returns></returns>
+        bool AllowAPICall(UUID user, string method);
+
+        /// <summary>
+        /// Changes the specified user's API access rate
+        /// </summary>
+        /// <param name="user">if UUID.Zero, sets the default access permissions for all users</param>
+        /// <param name="method">if empty, sets the default rate for all methods for the specified user</param>
+        /// <param name="rate">per-hour rate limit. if null, prevents the specified user from using the specified method. if zero, access is not rate limited.</param>
+        /// <returns></returns>
+        bool ChangeRateLimit(UUID user, string method, uint? rate);
+
+        /// <summary>
+        /// Gets the specified user's API access rate limit
+        /// </summary>
+        /// <param name="user"></param>
+        /// <param name="method"></param>
+        /// <returns>null indicates the user does not have permission to use the specified method.</returns>
+        uint? GetRateLimit(UUID user, string method);
+
+        /// <summary>
+        /// Gets the usage of the specified method by the specified user within the last hour.
+        /// </summary>
+        /// <param name="user"></param>
+        /// <param name="method"></param>
+        /// <returns></returns>
+        uint GetUsageRate(UUID user, string method);
+
+        /// <summary>
+        /// Determines if the specified user has exceeded their rate limit.
+        /// </summary>
+        /// <param name="user"></param>
+        /// <param name="method"></param>
+        /// <returns></returns>
+        bool RateLimitExceed(UUID user, string method);
+    }
+
+    public interface IWebAPIHandler
+    {
+        /// <summary>
+        /// Determines if a given API call should be processed.
+        /// </summary>
+        /// <param name="method"></param>
+        /// <param name="request"></param>
+        /// <param name="response">If request lacks the authorization headers, response is modified to indicate that http auth should be performed</param>
+        /// <returns>true if the API call should be allowed, false otherwise.</returns>
+        bool AllowAPICall(string method, OSHttpRequest request, OSHttpResponse response);
+
+        Hashtable OnHTTPGetTextureImage(Hashtable keysvals);
+    }
+
+    public class WebAPIConnector : IAuroraDataPlugin, IWebAPIConnector
     {
         private bool m_enabled = false;
         public bool Enabled
@@ -107,6 +183,11 @@ namespace Aurora.Services
             }
         }
 
+        private IGenericData GD;
+        private string m_connectionString;
+
+        private string m_table_accessLog = "webapi_access_log";
+
         #region console wrappers
 
         private void Info(object message)
@@ -131,7 +212,7 @@ namespace Aurora.Services
             }
         }
 
-        private bool handleConfig(IConfigSource m_config)
+        private bool handleConfig(IConfigSource m_config, string defaultConnectionString)
         {
             IConfig config = m_config.Configs["WebAPI"];
             if (config == null)
@@ -145,6 +226,7 @@ namespace Aurora.Services
             m_HandlerPassword = config.GetString("Password", string.Empty);
             m_HandlerPort = config.GetUInt("Port", 0);
             m_TexturePort = config.GetUInt("TextureServerPort", 0);
+            m_connectionString = config.GetString("ConnectionString", defaultConnectionString);
 
             if (Handler == string.Empty || HandlerPassword == string.Empty || HandlerPort == 0 || TexturePort == 0)
             {
@@ -157,9 +239,9 @@ namespace Aurora.Services
             return true;
         }
 
-        public void Initialize(IGenericData GenericData, IConfigSource source, IRegistryCore simBase, string DefaultConnectionString)
+        public void Initialize(IGenericData GenericData, IConfigSource source, IRegistryCore simBase, string defaultConnectionString)
         {
-            if (handleConfig(source))
+            if (handleConfig(source, defaultConnectionString))
             {
                 if (!Enabled)
                 {
@@ -167,20 +249,66 @@ namespace Aurora.Services
                 }
                 else
                 {
+                    GD = GenericData;
+                    GD.ConnectToDatabase(m_connectionString, "WebAPI", true);
+
                     DataManager.DataManager.RegisterPlugin(this);
                 }
             }
         }
 
         #endregion
+
+        #region IWebAPIConnector Members
+
+        public bool LogAPICall(UUID user, string method)
+        {
+            DateTime now = DateTime.Now;
+            uint ut = Utils.DateTimeToUnixTime(now);
+            DateTime origin = new DateTime(1970, 1, 1, 0, 0, 0);
+            origin.AddSeconds(ut);
+            return GD.Insert(m_table_accessLog, new object[3]{
+                user,
+                method,
+                ut + (((now.Ticks - origin.Ticks) / 10000000.0) % 1)
+            });
+        }
+
+        public bool AllowAPICall(UUID user, string method)
+        {
+            uint? rateLimit = GetRateLimit(user, method);
+            return rateLimit.HasValue && rateLimit.Value <= GetUsageRate(user, method);
+        }
+
+        public bool ChangeRateLimit(UUID user, string method, uint? rate){
+            return false; // not doing throttling or perm checking yet.
+        }
+
+        public uint? GetRateLimit(UUID user, string method)
+        {
+            return 0; // not doing throttling or perm checking yet.
+        }
+
+        public uint GetUsageRate(UUID user, string method)
+        {
+            return 0; // not doing throttling or perm checking yet.
+        }
+
+        public bool RateLimitExceed(UUID user, string method)
+        {
+            uint? rateLimit = GetRateLimit(user, method);
+            return !rateLimit.HasValue || rateLimit.Value <= GetUsageRate(user, method);
+        }
+
+        #endregion
     }
 
-    public class WebAPIHandler : IService
+    public class WebAPIHandler : IService, IWebAPIHandler
     {
-        private WebAPIConnector m_connector;
+        private IWebAPIConnector m_connector;
 
-        public IHttpServer m_server = null;
-        public IHttpServer m_server2 = null;
+        private IHttpServer m_server = null;
+        private IHttpServer m_server2 = null;
         string m_servernick = "Aurora-Sim";
         protected IRegistryCore m_registry;
 
@@ -333,7 +461,7 @@ namespace Aurora.Services
             return reply;
         }
 
-        public Bitmap ResizeBitmap(Image b, int nWidth, int nHeight)
+        private Bitmap ResizeBitmap(Image b, int nWidth, int nHeight)
         {
             Bitmap newsize = new Bitmap(nWidth, nHeight);
             Graphics temp = Graphics.FromImage(newsize);
@@ -455,7 +583,7 @@ namespace Aurora.Services
 
         private ExpiringCache<string, string> m_authNonces;
 
-        public bool AllowAPICall(OSHttpRequest request, OSHttpResponse response)
+        public bool AllowAPICall(string method, OSHttpRequest request, OSHttpResponse response)
         {
             if ((new List<string>(request.Headers.AllKeys)).Contains("authorization"))
             {
@@ -506,7 +634,30 @@ namespace Aurora.Services
                             authorization["nonce"],
                             HA2
                         }));
-                        return (expectedDigestResponse == authorization["response"]);
+                        if (expectedDigestResponse == authorization["response"])
+                        {
+                            UUID accountID = UUID.Zero;
+                            if (m_connector.AllowAPICall(accountID, method))
+                            {
+                                m_connector.LogAPICall(accountID, method);
+                                return true;
+                            }
+                            else if (m_connector.RateLimitExceed(accountID, method))
+                            {
+                                response.StatusCode = 429;
+                                response.StatusDescription = "Too Many Requests";
+                            }
+                            else
+                            {
+                                response.StatusCode = 403;
+                                response.StatusDescription = "Forbidden";
+                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
+                            }
+                        }
+                        else
+                        {
+                            MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
+                        }
                     }
                 }
             }
@@ -533,7 +684,7 @@ namespace Aurora.Services
     {
         const string httpPath = "/webapi";
 
-        protected WebAPIHandler WebAPI;
+        protected IWebAPIHandler WebAPI;
         protected string m_password;
         protected IRegistryCore m_registry;
         protected OSDMap GridInfo;
@@ -597,7 +748,7 @@ namespace Aurora.Services
                 string body = OSDParser.SerializeJsonString(map);
                 MainConsole.Instance.TraceFormat("[WebAPI]: HTTP GET {0} query String: {1}", method, body);
                 //Make sure that the person who is calling can access the web service
-                if (WebAPI.AllowAPICall(httpRequest, httpResponse))
+                if (WebAPI.AllowAPICall(method, httpRequest, httpResponse))
                 {
                     if (APIMethods.ContainsKey(method))
                     {
@@ -1914,7 +2065,7 @@ namespace Aurora.Services
     public class WebAPIHandler_HTTP_POST : BaseStreamHandler
     {
         const string httpPath = "/webapi";
-        protected WebAPIHandler WebAPI;
+        protected IWebAPIHandler WebAPI;
         protected string m_password;
         protected IRegistryCore m_registry;
         protected OSDMap GridInfo;
@@ -1978,7 +2129,7 @@ namespace Aurora.Services
             {
                 OSDMap map = body == string.Empty ? new OSDMap(0) : (OSDMap)OSDParser.DeserializeJson(body);
                 //Make sure that the person who is calling can access the web service
-                if (WebAPI.AllowAPICall(httpRequest, httpResponse))
+                if (WebAPI.AllowAPICall(method, httpRequest, httpResponse))
                 {
                     if (method == "Login" || method == "AdminLogin")
                     {
