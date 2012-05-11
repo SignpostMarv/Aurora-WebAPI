@@ -243,6 +243,8 @@ namespace Aurora.Services
 
             gridInfo[Name + "TextureServer"] = m_server2.ServerURI;
 
+            m_authNonces = new ExpiringCache<string, string>();
+
             MainConsole.Instance.Commands.AddCommand("webapi promote user", "Grants the specified user administrative powers within WebAPI.", "webapi promote user", PromoteUser);
             MainConsole.Instance.Commands.AddCommand("webapi demote user", "Revokes administrative powers for WebAPI from the specified user.", "webapi demote user", DemoteUser);
             MainConsole.Instance.Commands.AddCommand("webapi add group as news source", "Sets a group as a news source so in-world group notices can be used as a publishing tool for the website.", "webapi add group as news source", AddGroupAsNewsSource);
@@ -450,6 +452,81 @@ namespace Aurora.Services
         #endregion
 
         #endregion
+
+        private ExpiringCache<string, string> m_authNonces;
+
+        public bool AllowAPICall(OSHttpRequest request, OSHttpResponse response)
+        {
+            if ((new List<string>(request.Headers.AllKeys)).Contains("authorization"))
+            {
+                string auth = request.Headers["authorization"];
+                if (auth.Substring(0, 7) == "Digest ")
+                {
+                    string[] authBits = Regex.Split(auth.Substring(7), ", ");
+                    Dictionary<string, string> authorization = new Dictionary<string, string>(authBits.Length);
+                    Regex authBitRegex = new Regex("^\".+\"$");
+                    foreach (string authBit in authBits)
+                    {
+                        int pos = authBit.IndexOf('=');
+                        if (pos >= 0)
+                        {
+                            authorization[authBit.Substring(0, pos)] = authBitRegex.IsMatch(authBit.Substring(pos + 1)) ? authBit.Substring(pos + 2, authBit.Length - pos - 3) : authBit.Substring(pos + 1);
+                        }
+                    }
+                    string storednonce;
+                    if (
+                        authorization.ContainsKey("username") &&
+                        authorization.ContainsKey("realm") &&
+                        authorization.ContainsKey("uri") &&
+                        authorization.ContainsKey("qop") &&
+                        authorization.ContainsKey("nonce") &&
+                        authorization.ContainsKey("nc") &&
+                        authorization.ContainsKey("cnonce") &&
+                        authorization.ContainsKey("opaque") &&
+                        m_authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
+                        authorization["nonce"] == storednonce
+                    )
+                    {
+                        m_authNonces.Remove(authorization["opaque"]);
+                        string HA1 = Util.Md5Hash(string.Join(":", new string[]{
+                            authorization["username"],
+                            authorization["realm"],
+                            Utils.MD5String(m_connector.HandlerPassword)
+                        }));
+                        string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
+                        string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
+                            HA1,
+                            authorization["nonce"],
+                            authorization["nc"],
+                            authorization["cnonce"],
+                            "auth",
+                            HA2
+                        })) : Util.Md5Hash(string.Join(":", new string[]{
+                            HA1,
+                            authorization["nonce"],
+                            HA2
+                        }));
+                        return (expectedDigestResponse == authorization["response"]);
+                    }
+                }
+            }
+            else
+            {
+                string opaque = UUID.Random().ToString();
+                string nonce = UUID.Random().ToString();
+                m_authNonces.Add(opaque, nonce, 5);
+                response.StatusCode = 401;
+                response.StatusDescription = "Unauthorized";
+                string digestHeader = "Digest: " + string.Join(", ", new string[]{
+                        "realm=\"webapi@aurora\"",
+                        "qop=\"auth\"",
+                        "nonce=\"" + nonce + "\"",
+                        "opaque=\"" + opaque + "\""
+                    });
+                response.AddHeader("WWW-Authenticate", digestHeader);
+            }
+            return false;
+        }
     }
 
     public class WebAPIHandler_HTTP_GET : BaseStreamHandler
@@ -462,7 +539,6 @@ namespace Aurora.Services
         protected OSDMap GridInfo;
         private UUID AdminAgentID;
         private Dictionary<string, MethodInfo> APIMethods = new Dictionary<string, MethodInfo>();
-        private ExpiringCache<string, string> authNonces;
 
         public WebAPIHandler_HTTP_GET(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID)
             : base("GET", httpPath)
@@ -472,7 +548,6 @@ namespace Aurora.Services
             m_password = Util.Md5Hash(pass);
             GridInfo = gridInfo;
             AdminAgentID = adminAgentID;
-            authNonces = new ExpiringCache<string, string>();
             MethodInfo[] methods = this.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             for (uint i = 0; i < methods.Length; ++i)
             {
@@ -487,7 +562,6 @@ namespace Aurora.Services
 
         public override byte[] Handle(string path, Stream requestData, OSHttpRequest httpRequest, OSHttpResponse httpResponse)
         {
-
             string methodPath = path.Substring(httpPath.Length).Trim();
             if (methodPath != string.Empty && methodPath.Substring(0, 1) == "/")
             {
@@ -510,6 +584,7 @@ namespace Aurora.Services
             }
 
             string method = parts.Length < 1 ? string.Empty : parts[0];
+
             OSDMap resp = new OSDMap();
             try
             {
@@ -520,9 +595,9 @@ namespace Aurora.Services
                     map[HttpUtility.UrlDecode(key)] = ((OSDMap)OSDParser.DeserializeJson("{\"foo\":" + HttpUtility.UrlDecode(httpRequest.Query[key].ToString()) + "}"))["foo"];
                 }
                 string body = OSDParser.SerializeJsonString(map);
-                MainConsole.Instance.TraceFormat("[WebAPI]: query String: {0}", body);
+                MainConsole.Instance.TraceFormat("[WebAPI]: HTTP GET {0} query String: {1}", method, body);
                 //Make sure that the person who is calling can access the web service
-                if (ValidateUser(httpRequest, map))
+                if (WebAPI.AllowAPICall(httpRequest, httpResponse))
                 {
                     if (APIMethods.ContainsKey(method))
                     {
@@ -533,21 +608,6 @@ namespace Aurora.Services
                     {
                         MainConsole.Instance.TraceFormat("[WebAPI] Unsupported method called ({0})", method);
                     }
-                }
-                else
-                {
-                    string opaque = UUID.Random().ToString();
-                    string nonce = UUID.Random().ToString();
-                    authNonces.Add(opaque, nonce, 5000);
-                    httpResponse.StatusCode = 401;
-                    httpResponse.StatusDescription = "Unauthorized";
-                    string digestHeader = "Digest: " + string.Join(", ", new string[]{
-                        "realm=\"webapi@aurora\"",
-                        "qop=\"auth\"",
-                        "nonce=\"" + nonce + "\"",
-                        "opaque=\"" + opaque + "\""
-                    });
-                    httpResponse.AddHeader("WWW-Authenticate", digestHeader);
                 }
             }
             catch (Exception e)
@@ -561,64 +621,6 @@ namespace Aurora.Services
             UTF8Encoding encoding = new UTF8Encoding();
             httpResponse.ContentType = "application/json";
             return encoding.GetBytes(OSDParser.SerializeJsonString(resp, true));
-        }
-
-        private bool ValidateUser(OSHttpRequest request, OSDMap map)
-        {
-            if ((new List<string>(request.Headers.AllKeys)).Contains("authorization"))
-            {
-                string auth = request.Headers["authorization"];
-                if (auth.Substring(0, 7) == "Digest ")
-                {
-                    string[] authBits = Regex.Split(auth.Substring(7), ", ");
-                    Dictionary<string, string> authorization = new Dictionary<string, string>(authBits.Length);
-                    Regex authBitRegex = new Regex("^\".+\"$");
-                    foreach(string authBit in authBits){
-                        int pos = authBit.IndexOf('=');
-                        if (pos >= 0)
-                        {
-                            authorization[authBit.Substring(0, pos)] = authBitRegex.IsMatch(authBit.Substring(pos + 1)) ? authBit.Substring(pos + 2, authBit.Length - pos - 3) : authBit.Substring(pos + 1);
-                        }
-                    }
-                    string storednonce;
-                    if (
-                        authorization.ContainsKey("username") && 
-                        authorization.ContainsKey("realm") && 
-                        authorization.ContainsKey("uri") && 
-                        authorization.ContainsKey("qop") && 
-                        authorization.ContainsKey("nonce") && 
-                        authorization.ContainsKey("nc") && 
-                        authorization.ContainsKey("cnonce") && 
-                        authorization.ContainsKey("opaque") &&
-                        authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
-                        authorization["nonce"] == storednonce
-                    )
-                    {
-                        authNonces.Remove(authorization["opaque"]);
-                        string HA1 = Util.Md5Hash(string.Join(":", new string[]{
-                            authorization["username"],
-                            authorization["realm"],
-                            m_password
-                        }));
-                        string HA2 = Util.Md5Hash("GET:" + authorization["uri"]);
-                        string response = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
-                            HA1,
-                            authorization["nonce"],
-                            authorization["nc"],
-                            authorization["cnonce"],
-                            "auth",
-                            HA2
-                        })) : Util.Md5Hash(string.Join(":", new string[]{
-                            HA1,
-                            authorization["nonce"],
-                            HA2
-                        }));
-                        return (response == authorization["response"]);
-                    }
-                }
-            }
-            return false;
-//            return (map.ContainsKey("WebPassword") && (map["WebPassword"] == m_password));
         }
 
         #endregion
@@ -1911,6 +1913,7 @@ namespace Aurora.Services
 
     public class WebAPIHandler_HTTP_POST : BaseStreamHandler
     {
+        const string httpPath = "/webapi";
         protected WebAPIHandler WebAPI;
         protected string m_password;
         protected IRegistryCore m_registry;
@@ -1919,7 +1922,7 @@ namespace Aurora.Services
         private Dictionary<string, MethodInfo> APIMethods = new Dictionary<string, MethodInfo>();
 
         public WebAPIHandler_HTTP_POST(WebAPIHandler webapi, string pass, IRegistryCore reg, OSDMap gridInfo, UUID adminAgentID)
-            : base("POST", "/webapi")
+            : base("POST", httpPath)
         {
             WebAPI = webapi;
             m_registry = reg;
@@ -1945,33 +1948,53 @@ namespace Aurora.Services
             sr.Close();
             body = body.Trim();
 
-            MainConsole.Instance.TraceFormat("[WebAPI]: query String: {0}", body);
-            string method = string.Empty;
+            string methodPath = path.Substring(httpPath.Length).Trim();
+            if (methodPath != string.Empty && methodPath.Substring(0, 1) == "/")
+            {
+                methodPath = methodPath.Substring(1);
+            }
+
+            string[] parts = new string[0];
+            if (methodPath != string.Empty)
+            {
+                parts = methodPath.Split('/');
+            }
+            for (int i = 0; i < parts.Length; ++i)
+            {
+                parts[i] = HttpUtility.UrlDecode(parts[i]);
+            }
+
+            if (parts.Length == 0)
+            {
+                return new byte[0];
+            }
+
+            string method = parts.Length < 1 ? string.Empty : parts[0];
+
+            MainConsole.Instance.TraceFormat("[WebAPI]: HTTP POST {0} query String: {1}", method, body);
+
             OSDMap resp = new OSDMap();
             try
             {
-                OSDMap map = (OSDMap)OSDParser.DeserializeJson(body);
+                OSDMap map = body == string.Empty ? new OSDMap(0) : (OSDMap)OSDParser.DeserializeJson(body);
                 //Make sure that the person who is calling can access the web service
-                if (ValidateUser(httpRequest, map))
+                if (WebAPI.AllowAPICall(httpRequest, httpResponse))
                 {
-                    method = map["Method"].AsString();
                     if (method == "Login" || method == "AdminLogin")
                     {
+                        MainConsole.Instance.TraceFormat("[WebAPI] Supported method called ({0})", method);
                         resp = Login(map, method == "AdminLogin");
                     }
                     else if (APIMethods.ContainsKey(method))
                     {
-                        object[] args = new object[1]{map};
+                        MainConsole.Instance.TraceFormat("[WebAPI] Supported method called ({0})", method);
+                        object[] args = new object[1] { map };
                         resp = (OSDMap)APIMethods[method].Invoke(this, args);
                     }
                     else
                     {
                         MainConsole.Instance.TraceFormat("[WebAPI] Unsupported method called ({0})", method);
                     }
-                }
-                else
-                {
-                    MainConsole.Instance.Debug("Password does not match");
                 }
             }
             catch (Exception e)
@@ -1984,11 +2007,6 @@ namespace Aurora.Services
             UTF8Encoding encoding = new UTF8Encoding();
             httpResponse.ContentType = "application/json";
             return encoding.GetBytes(OSDParser.SerializeJsonString(resp, true));
-        }
-
-        private bool ValidateUser(OSHttpRequest request, OSDMap map)
-        {
-            return (map.ContainsKey("WebPassword") && (map["WebPassword"] == m_password));
         }
 
         #endregion
