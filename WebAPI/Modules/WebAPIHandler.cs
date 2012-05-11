@@ -93,8 +93,6 @@ namespace Aurora.Services
 
         string Handler { get; }
 
-        string HandlerPassword { get; }
-
         uint HandlerPort { get; }
 
         uint TexturePort { get; }
@@ -154,6 +152,20 @@ namespace Aurora.Services
         /// <param name="method"></param>
         /// <returns></returns>
         bool RateLimitExceed(UUID user, string method);
+
+        /// <summary>
+        /// Gets current access token for the specified user.
+        /// </summary>
+        /// <param name="user"></param>
+        /// <returns></returns>
+        UUID GetAccessToken(UUID user);
+
+        /// <summary>
+        /// Gets a new access token for the specified user. 
+        /// </summary>
+        /// <param name="user"></param>
+        /// <returns></returns>
+        UUID GetNewAccessToken(UUID user);
     }
 
     public interface IWebAPIHandler
@@ -211,15 +223,6 @@ namespace Aurora.Services
             }
         }
 
-        private string m_HandlerPassword = string.Empty;
-        public string HandlerPassword
-        {
-            get
-            {
-                return m_HandlerPassword;
-            }
-        }
-
         private uint m_HandlerPort = 0;
         public uint HandlerPort
         {
@@ -241,7 +244,8 @@ namespace Aurora.Services
         private IGenericData GD;
         private string m_connectionString;
 
-        private string m_table_accessLog = "webapi_access_log";
+        private const string c_table_accessLog = "webapi_access_log";
+        private const string c_table_accessTokens = "webapi_access_tokens";
 
         #region console wrappers
 
@@ -278,12 +282,11 @@ namespace Aurora.Services
             }
 
             m_Handler = config.GetString("Handler", string.Empty);
-            m_HandlerPassword = config.GetString("Password", string.Empty);
             m_HandlerPort = config.GetUInt("Port", 0);
             m_TexturePort = config.GetUInt("TextureServerPort", 0);
             m_connectionString = config.GetString("ConnectionString", defaultConnectionString);
 
-            if (Handler == string.Empty || HandlerPassword == string.Empty || HandlerPort == 0 || TexturePort == 0)
+            if (Handler == string.Empty || HandlerPort == 0 || TexturePort == 0)
             {
                 m_enabled = false;
                 Warn("Not loaded, configuration missing.");
@@ -371,6 +374,35 @@ namespace Aurora.Services
             return !rateLimit.HasValue || rateLimit.Value <= GetUsageRate(user, method);
         }
 
+        public UUID GetAccessToken(UUID user)
+        {
+            QueryFilter filter = new QueryFilter();
+            filter.andFilters["user"] = user;
+            List<string> query = GD.Query(new string[1] { "accessToken" }, c_table_accessTokens, filter, null, 0, 1);
+
+            return query.Count < 1 ? GetNewAccessToken(user) : UUID.Parse(query[0]);
+        }
+
+        public UUID GetNewAccessToken(UUID user)
+        {
+            QueryFilter filter = new QueryFilter();
+            filter.andFilters["user"] = user;
+            List<string> query = GD.Query(new string[1] { "accessToken" }, c_table_accessTokens, filter, null, 0, 1);
+
+            UUID newToken = UUID.Random();
+            if (query.Count < 1)
+            {
+                GD.Insert(c_table_accessTokens, new string[2] { user.ToString(), newToken.ToString() });
+            }
+            else
+            {
+                Dictionary<string, object> update = new Dictionary<string,object>(1);
+                update["accessToken"] = newToken;
+                GD.Update(c_table_accessTokens, update, null, filter, 0, 1);
+            }
+            return newToken;
+        }
+
         #endregion
     }
 
@@ -408,7 +440,7 @@ namespace Aurora.Services
             IConfig handlerConfig = config.Configs["Handlers"];
             UUID.TryParse(handlerConfig.GetString("WebAPIAdminID", UUID.Zero.ToString()), out AdminAgentID);
 
-            if (m_connector.Handler != Name || m_connector.HandlerPassword == string.Empty)
+            if (m_connector.Handler != Name)
             {
                 MainConsole.Instance.Warn("[WebAPI]: module not loaded");
                 return;
@@ -640,47 +672,62 @@ namespace Aurora.Services
                     )
                     {
                         m_authNonces.Remove(authorization["opaque"]);
-                        string HA1 = Util.Md5Hash(string.Join(":", new string[]{
-                            authorization["username"],
-                            authorization["realm"],
-                            Utils.MD5String(m_connector.HandlerPassword)
-                        }));
-                        string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
-                        string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
-                            HA1,
-                            authorization["nonce"],
-                            authorization["nc"],
-                            authorization["cnonce"],
-                            "auth",
-                            HA2
-                        })) : Util.Md5Hash(string.Join(":", new string[]{
-                            HA1,
-                            authorization["nonce"],
-                            HA2
-                        }));
-                        if (expectedDigestResponse == authorization["response"])
+
+                        OSDMap args = new OSDMap(1);
+                        args["Name"] = authorization["username"];
+                        OSDMap resp = CheckIfUserExists(args);
+                        if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
                         {
-                            UUID accountID = UUID.Zero;
-                            if (m_connector.AllowAPICall(accountID, method))
-                            {
-                                m_connector.LogAPICall(accountID, method);
-                                return true;
-                            }
-                            else if (m_connector.RateLimitExceed(accountID, method))
-                            {
-                                response.StatusCode = 429;
-                                response.StatusDescription = "Too Many Requests";
-                            }
-                            else
-                            {
-                                response.StatusCode = 403;
-                                response.StatusDescription = "Forbidden";
-                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
-                            }
+                            response.StatusCode = 403;
+                            response.StatusDescription = "Forbidden";
+                            MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use WebAPI", authorization["username"], method);
                         }
                         else
                         {
-                            MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
+                            UUID accountID = resp["UUID"].AsUUID();
+                            string password = Utils.MD5String(m_connector.GetAccessToken(accountID).ToString());
+
+                            string HA1 = Util.Md5Hash(string.Join(":", new string[]{
+                                authorization["username"],
+                                authorization["realm"],
+                                password
+                            }));
+                            string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
+                            string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
+                                HA1,
+                                authorization["nonce"],
+                                authorization["nc"],
+                                authorization["cnonce"],
+                                "auth",
+                                HA2
+                            })) : Util.Md5Hash(string.Join(":", new string[]{
+                                HA1,
+                                authorization["nonce"],
+                                HA2
+                            }));
+                            if (expectedDigestResponse == authorization["response"])
+                            {
+                                if (m_connector.AllowAPICall(accountID, method))
+                                {
+                                    m_connector.LogAPICall(accountID, method);
+                                    return true;
+                                }
+                                else if (m_connector.RateLimitExceed(accountID, method))
+                                {
+                                    response.StatusCode = 429;
+                                    response.StatusDescription = "Too Many Requests";
+                                }
+                                else
+                                {
+                                    response.StatusCode = 403;
+                                    response.StatusDescription = "Forbidden";
+                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
+                                }
+                            }
+                            else
+                            {
+                                MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
+                            }
                         }
                     }
                 }

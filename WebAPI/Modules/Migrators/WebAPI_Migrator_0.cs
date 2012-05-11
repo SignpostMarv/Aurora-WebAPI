@@ -104,6 +104,26 @@ namespace Aurora.DataManager.Migration.Migrators
                     Type = IndexType.Primary
                 }
             });
+
+            AddSchema("webapi_access_tokens", new ColumnDefinition[]{
+                new ColumnDefinition{
+                    Name = "user",
+                    Type = new ColumnTypeDef{
+                        Type = ColumnType.UUID
+                    }
+                },
+                new ColumnDefinition{
+                    Name = "accessToken",
+                    Type = new ColumnTypeDef{
+                        Type = ColumnType.UUID
+                    }
+                }
+            }, new IndexDefinition[]{
+                new IndexDefinition{
+                    Fields = new string[1]{ "user" },
+                    Type = IndexType.Primary
+                }
+            });
         }
 
         protected override void DoCreateDefaults(IDataConnector genericData)
