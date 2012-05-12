@@ -130,6 +130,20 @@ namespace Aurora.Services
         bool ChangeRateLimit(UUID user, string method, uint? rate);
 
         /// <summary>
+        /// Prevents the specified user from having any access to the API
+        /// </summary>
+        /// <param name="user"></param>
+        /// <returns></returns>
+        bool RevokeAPIAccess(UUID user);
+
+        /// <summary>
+        /// Removes all custom access rates for the specified user
+        /// </summary>
+        /// <param name="user"></param>
+        /// <returns></returns>
+        bool ResetAPIAccess(UUID user);
+
+        /// <summary>
         /// Gets the specified user's API access rate limit
         /// </summary>
         /// <param name="user"></param>
@@ -244,8 +258,11 @@ namespace Aurora.Services
         private IGenericData GD;
         private string m_connectionString;
 
+        private const string c_table_access = "webapi_access";
         private const string c_table_accessLog = "webapi_access_log";
         private const string c_table_accessTokens = "webapi_access_tokens";
+
+        private Dictionary<string, uint?> defaultAccessRate = new Dictionary<string, uint?>();
 
         #region console wrappers
 
@@ -310,7 +327,33 @@ namespace Aurora.Services
                     GD = GenericData;
                     GD.ConnectToDatabase(m_connectionString, "WebAPI", true);
 
-                    DataManager.DataManager.RegisterPlugin(this);
+                    QueryFilter filter = new QueryFilter();
+                    filter.andFilters["user"] = UUID.Zero;
+                    List<string> query = GD.Query(new string[2]{
+                        "method",
+                        "rate"
+                    }, c_table_access, filter, null, null, null);
+                    if (query.Count % 2 == 0)
+                    {
+                        Dictionary<string, uint?> DAR = new Dictionary<string, uint?>();
+                        for (int i = 0; i < query.Count; i += 2)
+                        {
+                            if (string.IsNullOrEmpty(query[i + 1]))
+                            {
+                                DAR[query[i]] = null;
+                            }
+                            else
+                            {
+                                DAR[query[i]] = uint.Parse(query[i + 1]);
+                            }
+                        }
+                        DataManager.DataManager.RegisterPlugin(this);
+                    }
+                    else
+                    {
+                        MainConsole.Instance.Error("[" + Name + "]: Could not find default access rate limits");
+                    }
+
                 }
             }
         }
@@ -351,21 +394,80 @@ namespace Aurora.Services
         public bool AllowAPICall(UUID user, string method)
         {
             uint? rateLimit = GetRateLimit(user, method);
-            return rateLimit.HasValue && rateLimit.Value <= GetUsageRate(user, method);
+            return rateLimit.HasValue && (rateLimit.Value > 0 ? GetUsageRate(user, method) <= rateLimit.Value : true);
         }
 
         public bool ChangeRateLimit(UUID user, string method, uint? rate){
-            return false; // not doing throttling or perm checking yet.
+            return GD.Insert(c_table_access, new object[3]{
+                user,
+                method.Trim(),
+                rate
+            }, "rate", rate);
+        }
+
+        public bool RevokeAPIAccess(UUID user)
+        {
+            QueryFilter filter = new QueryFilter();
+            filter.andFilters["user"] = user;
+
+            GD.Delete(c_table_access, filter);
+            return ChangeRateLimit(user, "", null);
+        }
+
+        public bool ResetAPIAccess(UUID user)
+        {
+            if (user != UUID.Zero)
+            {
+                QueryFilter filter = new QueryFilter();
+                filter.andFilters["user"] = user;
+
+                GD.Delete(c_table_access, filter);
+            }
+            return false;
         }
 
         public uint? GetRateLimit(UUID user, string method)
         {
-            return 0; // not doing throttling or perm checking yet.
+            method = method.Trim();
+            QueryFilter filter = new QueryFilter();
+            filter.andFilters["user"] = user;
+            filter.andFilters["method"] = method;
+            List<string> query = GD.Query(new string[1] { "rate" }, c_table_access, filter, null, 0, 1);
+            if (query.Count < 1 && method != string.Empty)
+            {
+                filter.andFilters["method"] = "";
+                query = GD.Query(new string[1] { "rate" }, c_table_access, filter, null, 0, 1);
+            }
+            if (query.Count < 1)
+            {
+                return defaultAccessRate.ContainsKey(method) ? defaultAccessRate[method] : (defaultAccessRate.ContainsKey("") ? defaultAccessRate[""] : null);
+            }
+            else if (string.IsNullOrEmpty(query[0]))
+            {
+                return null;
+            }
+            else
+            {
+                return uint.Parse(query[0]);
+            }
         }
 
         public uint GetUsageRate(UUID user, string method)
         {
-            return 0; // not doing throttling or perm checking yet.
+            DateTime now = DateTime.Now;
+            uint ut = Utils.DateTimeToUnixTime(now);
+            DateTime origin = new DateTime(1970, 1, 1, 0, 0, 0);
+            origin.AddSeconds(ut);
+            double staleTime = ut + (((now.Ticks - origin.Ticks) / 10000000.0) % 1) - 3600;
+
+            method = method.Trim();
+            QueryFilter filter = new QueryFilter();
+            filter.andFilters["user"] = user;
+            filter.andFilters["method"] = method;
+            filter.andGreaterThanEqFilters["loggedat"] = staleTime;
+
+            List<string> query = GD.Query(new string[1] { "COUNT(*)" }, c_table_accessLog, filter, null, 0, 1);
+            return uint.Parse(query[0]);
         }
 
         public bool RateLimitExceed(UUID user, string method)
@@ -487,6 +589,10 @@ namespace Aurora.Services
             MainConsole.Instance.Commands.AddCommand("webapi get access token", "Gets the current access token to the API for the specified user", "webapi get access token", GetAccessToken);
             MainConsole.Instance.Commands.AddCommand("webapi get new access token", "Gets a new access token to the API for the specified user", "webapi get new access token", GetNewAccessToken);
             MainConsole.Instance.Commands.AddCommand("webapi clear log", "Clears the API access log", "webapi clear log [staleonly]", ClearLog);
+            MainConsole.Instance.Commands.AddCommand("webapi get usage rate", "Get the current usage rate for the specified user on the specified method.", "webapi get usage rate", GetUsageRate);
+            MainConsole.Instance.Commands.AddCommand("webapi grant access", "Grants access to a specified method for a specified user.", "webapi grant access [method]", GrantAPIAccess);
+            MainConsole.Instance.Commands.AddCommand("webapi revoke access", "Revokes access for a specified user.", "webapi revoke access", RevokeAPIAccess);
+            MainConsole.Instance.Commands.AddCommand("webapi reset access", "Resets access to defaults for a specified method for a specified user.", "webapi reset access", ResetAPIAccess);
         }
 
         public void FinishedStartup()
@@ -550,6 +656,77 @@ namespace Aurora.Services
         private void ClearLog(string[] cmd)
         {
             m_connector.ClearLog(cmd.Length == 4 && cmd[3] == "staleonly");
+        }
+
+        private void GetUsageRate(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+            string method = MainConsole.Instance.Prompt("Name of method");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                MainConsole.Instance.InfoFormat("[" + Name + "]: Current usage rate for {0} on method {1} : {2}", name, method, m_connector.GetUsageRate(resp["UUID"].AsUUID(), method));
+            }
+        }
+
+        private void GrantAPIAccess(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                string method = MainConsole.Instance.Prompt("Name of method (leave blank to set default rate for all methods)", cmd.Length == 4 ? cmd[3].Trim() : "");
+                uint rate = uint.Parse(MainConsole.Instance.Prompt("Hourly rate limit (zero for no limit)", "0"));
+                m_connector.ChangeRateLimit(resp["UUID"].AsUUID(), method, rate);
+            }
+        }
+
+        private void RevokeAPIAccess(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                m_connector.RevokeAPIAccess(resp["UUID"].AsUUID());
+            }
+        }
+
+        private void ResetAPIAccess(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                m_connector.ResetAPIAccess(resp["UUID"].AsUUID());
+            }
         }
 
         #endregion
@@ -754,16 +931,22 @@ namespace Aurora.Services
                                     m_connector.LogAPICall(accountID, method);
                                     return true;
                                 }
-                                else if (m_connector.RateLimitExceed(accountID, method))
-                                {
-                                    response.StatusCode = 429;
-                                    response.StatusDescription = "Too Many Requests";
-                                }
-                                else
+                                else if (m_connector.GetRateLimit(accountID, method) == null)
                                 {
                                     response.StatusCode = 403;
                                     response.StatusDescription = "Forbidden";
                                     MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
+                                }
+                                else if (m_connector.RateLimitExceed(accountID, method))
+                                {
+                                    response.StatusCode = 429;
+                                    response.StatusDescription = "Too Many Requests";
+                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} exceeded their hourly rate limit for API method {1}", authorization["username"], method);
+                                }
+                                else
+                                {
+                                    response.StatusCode = 500;
+                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} cannotuse API method {1}, although we're not sure why.", authorization["username"], method);
                                 }
                             }
                             else
