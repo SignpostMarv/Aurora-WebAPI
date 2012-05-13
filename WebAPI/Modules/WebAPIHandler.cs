@@ -72,12 +72,6 @@ namespace Aurora.Services
     public class WebAPIMethod : Attribute
     {
         private WebAPIHttpMethod m_httpMethod;
-
-        public WebAPIMethod(WebAPIHttpMethod HttpMethod)
-        {
-            m_httpMethod = HttpMethod;
-        }
-
         public WebAPIHttpMethod HttpMethod
         {
             get
@@ -85,6 +79,28 @@ namespace Aurora.Services
                 return m_httpMethod;
             }
         }
+
+        private bool m_passOnRequestingAgentID;
+        public bool PassOnRequestingAgentID
+        {
+            get
+            {
+                return m_passOnRequestingAgentID;
+            }
+        }
+
+        public WebAPIMethod(WebAPIHttpMethod HttpMethod)
+        {
+            m_httpMethod = HttpMethod;
+            m_passOnRequestingAgentID = false;
+        }
+
+        public WebAPIMethod(WebAPIHttpMethod HttpMethod, bool passOnRequestingAgentID)
+        {
+            m_httpMethod = HttpMethod;
+            m_passOnRequestingAgentID = passOnRequestingAgentID;
+        }
+
     }
 
     public interface IWebAPIConnector
@@ -845,10 +861,10 @@ namespace Aurora.Services
             MethodInfo[] methods = this.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             for (uint i = 0; i < methods.Length; ++i)
             {
-                if (methods[i].IsPrivate && methods[i].ReturnType == typeof(OSDMap) && methods[i].GetParameters().Length == 1 && methods[i].GetParameters()[0].ParameterType == typeof(OSDMap))
+                WebAPIMethod attr = (WebAPIMethod)Attribute.GetCustomAttribute(methods[i], typeof(WebAPIMethod));
+                if (attr != null && methods[i].ReturnType == typeof(OSDMap) && methods[i].GetParameters().Length >= 1 && methods[i].GetParameters()[0].ParameterType == typeof(OSDMap))
                 {
-                    WebAPIMethod attr = (WebAPIMethod)Attribute.GetCustomAttribute(methods[i], typeof(WebAPIMethod));
-                    if (attr != null)
+                    if ((!attr.PassOnRequestingAgentID && methods[i].GetParameters().Length == 1) || (attr.PassOnRequestingAgentID && methods[i].GetParameters().Length == 2))
                     {
                         m_APIMethods[attr.HttpMethod][methods[i].Name] = methods[i];
                     }
@@ -858,7 +874,7 @@ namespace Aurora.Services
 
         private ExpiringCache<string, string> m_authNonces;
 
-        public bool AllowAPICall(string method, OSHttpRequest request, OSHttpResponse response)
+        private Dictionary<string, string> authorizationHeader(OSHttpRequest request)
         {
             if ((new List<string>(request.Headers.AllKeys)).Contains("authorization"))
             {
@@ -876,43 +892,64 @@ namespace Aurora.Services
                             authorization[authBit.Substring(0, pos)] = authBitRegex.IsMatch(authBit.Substring(pos + 1)) ? authBit.Substring(pos + 2, authBit.Length - pos - 3) : authBit.Substring(pos + 1);
                         }
                     }
-                    string storednonce;
-                    if (
-                        authorization.ContainsKey("username") &&
-                        authorization.ContainsKey("realm") &&
-                        authorization.ContainsKey("uri") &&
-                        authorization.ContainsKey("qop") &&
-                        authorization.ContainsKey("nonce") &&
-                        authorization.ContainsKey("nc") &&
-                        authorization.ContainsKey("cnonce") &&
-                        authorization.ContainsKey("opaque") &&
-                        m_authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
-                        authorization["nonce"] == storednonce
-                    )
+                    return authorization;
+                }
+            }
+            return null;
+        }
+
+        private UUID authUser(OSHttpRequest request)
+        {
+            Dictionary<string, string> authorization = authorizationHeader(request);
+            if (authorization != null && authorization.ContainsKey("username"))
+            {
+                OSDMap args = new OSDMap(1);
+                args["Name"] = authorization["username"];
+                OSDMap resp = CheckIfUserExists(args);
+                return ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero)) ? UUID.Zero : resp["UUID"].AsUUID();
+            }
+            return UUID.Zero;
+        }
+
+        public bool AllowAPICall(string method, OSHttpRequest request, OSHttpResponse response)
+        {
+            Dictionary<string, string> authorization = authorizationHeader(request);
+            if (authorization != null)
+            {
+                string storednonce;
+                if (
+                    authorization.ContainsKey("username") &&
+                    authorization.ContainsKey("realm") &&
+                    authorization.ContainsKey("uri") &&
+                    authorization.ContainsKey("qop") &&
+                    authorization.ContainsKey("nonce") &&
+                    authorization.ContainsKey("nc") &&
+                    authorization.ContainsKey("cnonce") &&
+                    authorization.ContainsKey("opaque") &&
+                    m_authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
+                    authorization["nonce"] == storednonce
+                )
+                {
+                    m_authNonces.Remove(authorization["opaque"]);
+
+                    UUID accountID = authUser(request);
+                    if (accountID == UUID.Zero)
                     {
-                        m_authNonces.Remove(authorization["opaque"]);
+                        response.StatusCode = 403;
+                        response.StatusDescription = "Forbidden";
+                        MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use WebAPI", authorization["username"], method);
+                    }
+                    else
+                    {
+                        string password = Utils.MD5String(m_connector.GetAccessToken(accountID).ToString());
 
-                        OSDMap args = new OSDMap(1);
-                        args["Name"] = authorization["username"];
-                        OSDMap resp = CheckIfUserExists(args);
-                        if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
-                        {
-                            response.StatusCode = 403;
-                            response.StatusDescription = "Forbidden";
-                            MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use WebAPI", authorization["username"], method);
-                        }
-                        else
-                        {
-                            UUID accountID = resp["UUID"].AsUUID();
-                            string password = Utils.MD5String(m_connector.GetAccessToken(accountID).ToString());
-
-                            string HA1 = Util.Md5Hash(string.Join(":", new string[]{
+                        string HA1 = Util.Md5Hash(string.Join(":", new string[]{
                                 authorization["username"],
                                 Name,
                                 password
                             }));
-                            string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
-                            string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
+                        string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
+                        string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
                                 HA1,
                                 storednonce,
                                 authorization["nc"],
@@ -924,35 +961,34 @@ namespace Aurora.Services
                                 storednonce,
                                 HA2
                             }));
-                            if (expectedDigestResponse == authorization["response"])
+                        if (expectedDigestResponse == authorization["response"])
+                        {
+                            if (m_connector.AllowAPICall(accountID, method))
                             {
-                                if (m_connector.AllowAPICall(accountID, method))
-                                {
-                                    m_connector.LogAPICall(accountID, method);
-                                    return true;
-                                }
-                                else if (m_connector.GetRateLimit(accountID, method) == null)
-                                {
-                                    response.StatusCode = 403;
-                                    response.StatusDescription = "Forbidden";
-                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
-                                }
-                                else if (m_connector.RateLimitExceed(accountID, method))
-                                {
-                                    response.StatusCode = 429;
-                                    response.StatusDescription = "Too Many Requests";
-                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} exceeded their hourly rate limit for API method {1}", authorization["username"], method);
-                                }
-                                else
-                                {
-                                    response.StatusCode = 500;
-                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} cannotuse API method {1}, although we're not sure why.", authorization["username"], method);
-                                }
+                                m_connector.LogAPICall(accountID, method);
+                                return true;
+                            }
+                            else if (m_connector.GetRateLimit(accountID, method) == null)
+                            {
+                                response.StatusCode = 403;
+                                response.StatusDescription = "Forbidden";
+                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
+                            }
+                            else if (m_connector.RateLimitExceed(accountID, method))
+                            {
+                                response.StatusCode = 429;
+                                response.StatusDescription = "Too Many Requests";
+                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} exceeded their hourly rate limit for API method {1}", authorization["username"], method);
                             }
                             else
                             {
-                                MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
+                                response.StatusCode = 500;
+                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} cannotuse API method {1}, although we're not sure why.", authorization["username"], method);
                             }
+                        }
+                        else
+                        {
+                            MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
                         }
                     }
                 }
@@ -1034,13 +1070,15 @@ namespace Aurora.Services
                         //Make sure that the person who is calling can access the web service
                         if (AllowAPICall(method, httpRequest, httpResponse))
                         {
-                            if (HttpMethod == WebAPIHttpMethod.POST && (method == "Login" || method == "AdminLogin"))
+                            if (m_APIMethods[HttpMethod].ContainsKey(method))
                             {
-                                resp = Login(args, method == "AdminLogin");
-                            }
-                            else if (m_APIMethods[HttpMethod].ContainsKey(method))
-                            {
-                                resp = (OSDMap)m_APIMethods[HttpMethod][method].Invoke(this, new object[1] { args });
+                                object[] methodArgs = new object[1] { args }; ;
+                                WebAPIMethod attr = (WebAPIMethod)Attribute.GetCustomAttribute(m_APIMethods[HttpMethod][method], typeof(WebAPIMethod));
+                                if (attr.PassOnRequestingAgentID)
+                                {
+                                    methodArgs = new object[2] { args, authUser(httpRequest) };
+                                }
+                                resp = (OSDMap)m_APIMethods[HttpMethod][method].Invoke(this, methodArgs);
                             }
                             else
                             {
@@ -1517,9 +1555,7 @@ namespace Aurora.Services
         #endregion
 
         #region Login
-
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
-        private OSDMap Login(OSDMap map, bool asAdmin)
+        private OSDMap doLogin(OSDMap map, bool asAdmin)
         {
             string Name = map["Name"].AsString();
             string Password = map["Password"].AsString();
@@ -1567,6 +1603,18 @@ namespace Aurora.Services
             }
 
             return resp;
+        }
+
+        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        private OSDMap Login(OSDMap map)
+        {
+            return doLogin(map, false);
+        }
+
+        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        private OSDMap AdminLogin(OSDMap map)
+        {
+            return doLogin(map, false);
         }
 
         [WebAPIMethod(WebAPIHttpMethod.POST)]
@@ -2821,8 +2869,8 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap GetGroups(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap GetGroups(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             uint start = map.ContainsKey("Start") ? map["Start"].AsUInteger() : 0;
@@ -2855,7 +2903,7 @@ namespace Aurora.Services
                         }
                     }
                     List<GroupRecord> reply = groups.GetGroupRecords(
-                        AdminAgentID,
+                        requestingAgentID,
                         start,
                         map.ContainsKey("Count") ? map["Count"].AsUInteger() : 10,
                         sort,
@@ -2868,7 +2916,7 @@ namespace Aurora.Services
                             Groups.Add(GroupRecord2OSDMap(groupReply));
                         }
                     }
-                    resp["Total"] = groups.GetNumberOfGroups(AdminAgentID, boolFields);
+                    resp["Total"] = groups.GetNumberOfGroups(requestingAgentID, boolFields);
                 }
                 else
                 {
@@ -2884,7 +2932,7 @@ namespace Aurora.Services
                     }
                     if (GroupIDs.Count > 0)
                     {
-                        List<GroupRecord> reply = groups.GetGroupRecords(AdminAgentID, GroupIDs);
+                        List<GroupRecord> reply = groups.GetGroupRecords(requestingAgentID, GroupIDs);
                         if (reply.Count > 0)
                         {
                             foreach (GroupRecord groupReply in reply)
@@ -2901,8 +2949,8 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap GetNewsSources(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap GetNewsSources(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             uint start = map.ContainsKey("Start") ? map["Start"].AsUInteger() : 0;
@@ -2938,7 +2986,7 @@ namespace Aurora.Services
                     List<UUID> page = GroupIDs.GetRange((int)start, end);
                     if (page.Count > 0)
                     {
-                        List<GroupRecord> reply = groups.GetGroupRecords(AdminAgentID, page);
+                        List<GroupRecord> reply = groups.GetGroupRecords(requestingAgentID, page);
                         if (reply.Count > 0)
                         {
                             foreach (GroupRecord groupReply in reply)
@@ -2955,8 +3003,8 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap GetGroup(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap GetGroup(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             IGroupsServiceConnector groups = Aurora.DataManager.DataManager.RequestPlugin<IGroupsServiceConnector>();
@@ -2965,7 +3013,7 @@ namespace Aurora.Services
             {
                 UUID groupID = map.ContainsKey("UUID") ? UUID.Parse(map["UUID"].ToString()) : UUID.Zero;
                 string name = map.ContainsKey("Name") ? map["Name"].ToString() : "";
-                GroupRecord reply = groups.GetGroupRecord(AdminAgentID, groupID, name);
+                GroupRecord reply = groups.GetGroupRecord(requestingAgentID, groupID, name);
                 if (reply != null)
                 {
                     resp["Group"] = GroupRecord2OSDMap(reply);
@@ -2978,8 +3026,8 @@ namespace Aurora.Services
 
         #region GroupNoticeData
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap GroupNotices(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap GroupNotices(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             resp["GroupNotices"] = new OSDArray();
@@ -3002,7 +3050,7 @@ namespace Aurora.Services
                 {
                     uint start = map.ContainsKey("Start") ? uint.Parse(map["Start"]) : 0;
                     uint count = map.ContainsKey("Count") ? uint.Parse(map["Count"]) : 10;
-                    List<GroupNoticeData> groupNotices = groups.GetGroupNotices(AdminAgentID, start, count, GroupIDs);
+                    List<GroupNoticeData> groupNotices = groups.GetGroupNotices(requestingAgentID, start, count, GroupIDs);
                     OSDArray GroupNotices = new OSDArray(groupNotices.Count);
                     groupNotices.ForEach(delegate(GroupNoticeData GND)
                     {
@@ -3016,20 +3064,20 @@ namespace Aurora.Services
                         gnd["ItemID"] = OSD.FromUUID(GND.ItemID);
                         gnd["AssetType"] = OSD.FromInteger((int)GND.AssetType);
                         gnd["ItemName"] = OSD.FromString(GND.ItemName);
-                        GroupNoticeInfo notice = groups.GetGroupNotice(AdminAgentID, GND.NoticeID);
+                        GroupNoticeInfo notice = groups.GetGroupNotice(requestingAgentID, GND.NoticeID);
                         gnd["Message"] = OSD.FromString(notice.Message);
                         GroupNotices.Add(gnd);
                     });
                     resp["GroupNotices"] = GroupNotices;
-                    resp["Total"] = (int)groups.GetNumberOfGroupNotices(AdminAgentID, GroupIDs);
+                    resp["Total"] = (int)groups.GetNumberOfGroupNotices(requestingAgentID, GroupIDs);
                 }
             }
 
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap NewsFromGroupNotices(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap NewsFromGroupNotices(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             resp["GroupNotices"] = new OSDArray();
@@ -3049,7 +3097,7 @@ namespace Aurora.Services
             }
             foreach (UUID groupID in GroupIDs)
             {
-                GroupRecord group = groups.GetGroupRecord(AdminAgentID, groupID, "");
+                GroupRecord group = groups.GetGroupRecord(requestingAgentID, groupID, "");
                 if (!group.ShowInList)
                 {
                     GroupIDs.Remove(groupID);
@@ -3064,11 +3112,11 @@ namespace Aurora.Services
             args["Count"] = OSD.FromString(count.ToString());
             args["Groups"] = new OSDArray(GroupIDs.ConvertAll(x => OSD.FromString(x.ToString())));
 
-            return GroupNotices(args);
+            return GroupNotices(args, requestingAgentID);
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap GetGroupNotice(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap GetGroupNotice(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             UUID noticeID = map.ContainsKey("NoticeID") ? UUID.Parse(map["NoticeID"]) : UUID.Zero;
@@ -3076,7 +3124,7 @@ namespace Aurora.Services
 
             if (noticeID != UUID.Zero && groups != null)
             {
-                GroupNoticeData GND = groups.GetGroupNoticeData(AdminAgentID, noticeID);
+                GroupNoticeData GND = groups.GetGroupNoticeData(requestingAgentID, noticeID);
                 if (GND != null)
                 {
                     OSDMap gnd = new OSDMap();
@@ -3089,7 +3137,7 @@ namespace Aurora.Services
                     gnd["ItemID"] = OSD.FromUUID(GND.ItemID);
                     gnd["AssetType"] = OSD.FromInteger((int)GND.AssetType);
                     gnd["ItemName"] = OSD.FromString(GND.ItemName);
-                    GroupNoticeInfo notice = groups.GetGroupNotice(AdminAgentID, GND.NoticeID);
+                    GroupNoticeInfo notice = groups.GetGroupNotice(requestingAgentID, GND.NoticeID);
                     gnd["Message"] = OSD.FromString(notice.Message);
 
                     resp["GroupNotice"] = gnd;
@@ -3099,14 +3147,14 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
-        private OSDMap EditGroupNotice(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.POST, true)]
+        private OSDMap EditGroupNotice(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
             UUID noticeID = map.ContainsKey("NoticeID") ? UUID.Parse(map["NoticeID"]) : UUID.Zero;
             IGroupsServiceConnector groups = Aurora.DataManager.DataManager.RequestPlugin<IGroupsServiceConnector>();
-            GroupNoticeData GND = noticeID != UUID.Zero && groups != null ? groups.GetGroupNoticeData(AdminAgentID, noticeID) : null;
-            GroupNoticeInfo notice = GND != null ? groups.GetGroupNotice(AdminAgentID, GND.NoticeID) : null;
+            GroupNoticeData GND = noticeID != UUID.Zero && groups != null ? groups.GetGroupNoticeData(requestingAgentID, noticeID) : null;
+            GroupNoticeInfo notice = GND != null ? groups.GetGroupNotice(requestingAgentID, GND.NoticeID) : null;
 
             if (noticeID == UUID.Zero)
             {
@@ -3127,7 +3175,7 @@ namespace Aurora.Services
             }
             else
             {
-                resp["Success"] = groups.EditGroupNotice(AdminAgentID, notice.GroupID, GND.NoticeID, map.ContainsKey("Subject") ? map["Subject"].ToString() : GND.Subject, map.ContainsKey("Message") ? map["Message"].ToString() : notice.Message);
+                resp["Success"] = groups.EditGroupNotice(requestingAgentID, notice.GroupID, GND.NoticeID, map.ContainsKey("Subject") ? map["Subject"].ToString() : GND.Subject, map.ContainsKey("Message") ? map["Message"].ToString() : notice.Message);
             }
 
             return resp;
@@ -3203,8 +3251,8 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
-        private OSDMap RemoveGroupNotice(OSDMap map)
+        [WebAPIMethod(WebAPIHttpMethod.POST, true)]
+        private OSDMap RemoveGroupNotice(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
 
@@ -3238,7 +3286,7 @@ namespace Aurora.Services
                 {
                     try
                     {
-                        resp["Success"] = groups.RemoveGroupNotice(AdminAgentID, GroupID, noticeID);
+                        resp["Success"] = groups.RemoveGroupNotice(requestingAgentID, GroupID, noticeID);
                     }
                     catch
                     {
