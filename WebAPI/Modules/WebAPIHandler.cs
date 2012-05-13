@@ -908,20 +908,20 @@ namespace Aurora.Services
 
                             string HA1 = Util.Md5Hash(string.Join(":", new string[]{
                                 authorization["username"],
-                                authorization["realm"],
+                                Name,
                                 password
                             }));
                             string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
                             string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
                                 HA1,
-                                authorization["nonce"],
+                                storednonce,
                                 authorization["nc"],
                                 authorization["cnonce"],
                                 "auth",
                                 HA2
                             })) : Util.Md5Hash(string.Join(":", new string[]{
                                 HA1,
-                                authorization["nonce"],
+                                storednonce,
                                 HA2
                             }));
                             if (expectedDigestResponse == authorization["response"])
@@ -964,8 +964,8 @@ namespace Aurora.Services
                 m_authNonces.Add(opaque, nonce, 5);
                 response.StatusCode = 401;
                 response.StatusDescription = "Unauthorized";
-                string digestHeader = "Digest: " + string.Join(", ", new string[]{
-                        "realm=\"webapi@aurora\"",
+                string digestHeader = "Digest " + string.Join(", ", new string[]{
+                        "realm=\"" + Name + "\"",
                         "qop=\"auth\"",
                         "nonce=\"" + nonce + "\"",
                         "opaque=\"" + opaque + "\""
