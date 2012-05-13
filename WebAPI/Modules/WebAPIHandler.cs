@@ -2295,13 +2295,9 @@ namespace Aurora.Services
             {
                 resp["Failed"] = new OSDString("Abuse Report ID not specified.");
             }
-            else if (!map.ContainsKey("WebPassword"))
-            {
-                resp["Failed"] = new OSDString("Cannot authenticate against IAbuseReports service.");
-            }
             else
             {
-                AbuseReport ar = ar_service.GetAbuseReport(map["AbuseReport"].AsInteger(), map["WebPassword"].AsString());
+                AbuseReport ar = ar_service.GetAbuseReport(map["AbuseReport"].AsInteger());
                 if (ar == null)
                 {
                     resp["Failed"] = new OSDString("Failed to find Abuse Report with specified ID.");
@@ -2320,11 +2316,11 @@ namespace Aurora.Services
         {
             OSDMap resp = new OSDMap();
             IAbuseReports ar = m_registry.RequestModuleInterface<IAbuseReports>();
-            AbuseReport tar = ar.GetAbuseReport(map["Number"].AsInteger(), map["WebPassword"].AsString());
+            AbuseReport tar = ar.GetAbuseReport(map["Number"].AsInteger());
             if (tar != null)
             {
                 tar.Active = false;
-                ar.UpdateAbuseReport(tar, map["WebPassword"].AsString());
+                ar.UpdateAbuseReport(tar);
                 resp["Finished"] = OSD.FromBoolean(true);
             }
             else
@@ -2341,11 +2337,11 @@ namespace Aurora.Services
         {
             OSDMap resp = new OSDMap();
             IAbuseReports ar = m_registry.RequestModuleInterface<IAbuseReports>();
-            AbuseReport tar = ar.GetAbuseReport(map["Number"].AsInteger(), map["WebPassword"].AsString());
+            AbuseReport tar = ar.GetAbuseReport(map["Number"].AsInteger());
             if (tar != null)
             {
                 tar.Notes = map["Notes"].ToString();
-                ar.UpdateAbuseReport(tar, map["WebPassword"].AsString());
+                ar.UpdateAbuseReport(tar);
                 resp["Finished"] = OSD.FromBoolean(true);
             }
             else
