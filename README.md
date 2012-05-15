@@ -3,14 +3,14 @@ All releases are available as source tags on GitHub.
 
 ## v3.x (master branch)
 * v3.x runs under [Aurora-Sim master](https://github.com/aurora-sim/Aurora-Sim/tree/master)
-* v3.x release candidates work with [libAurora.php](https://github.com/aurora-sim/libAurora.php/tree/WebAPI-v3) and [Aurora-WebUI-GPL](https://github.com/SignpostMarv/Aurora-WebUI-GPL)
+* v3.x release candidates work with [libAurora.php](https://github.com/aurora-sim/libAurora.php/tree/WebAPI-v3), [Aurora-WebUI master branch](https://github.com/aurora-sim/Aurora-WebUI/tree/master) and [Aurora-WebUI-GPL](https://github.com/SignpostMarv/Aurora-WebUI-GPL)
 
 ## v2.x
 
 ### Release Candidates
 * No v2.x release candidate works with Aurora-Sim 5.0.1
 * v2.x release candidates only run under [Aurora-Sim master](https://github.com/aurora-sim/Aurora-Sim/tree/master)
-* v2.x release candidates work with [libAurora.php](https://github.com/aurora-sim/libAurora.php/tree/master), [Aurora-WebUI master branch](https://github.com/aurora-sim/Aurora-WebUI/tree/master)
+* v2.x release candidates work with [libAurora.php](https://github.com/aurora-sim/libAurora.php/tree/master), [Aurora-WebUI v2.0 releases](https://github.com/aurora-sim/Aurora-WebUI/tree/v2.0.x)
 
 ## v1.x
 * v1.0 runs under [Aurora-Sim 5.0.1](https://github.com/aurora-sim/Aurora-Sim/downloads)
