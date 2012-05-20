@@ -44,6 +44,8 @@
   <Reference name="OpenMetaverse.StructuredData" path="../../../bin/"/>
   <Reference name="OpenMetaverseTypes" path="../../../bin/"/>
 
+  <Reference name="OpenSim.Region.Framework"/>
+
   <Reference name="Aurora.DataManager"/>
   <Reference name="Aurora.Framework"/>
   <Reference name="Aurora.Services.DataService"/>

@@ -51,6 +51,8 @@ using OpenMetaverse.StructuredData;
 using EventFlags = OpenMetaverse.DirectoryManager.EventFlags;
 
 using OpenSim.Services.Interfaces;
+using OpenSim.Region.Framework.Scenes;
+using OpenSim.Region.Framework.Interfaces;
 using FriendInfo = OpenSim.Services.Interfaces.FriendInfo;
 using GridRegion = OpenSim.Services.Interfaces.GridRegion;
 
@@ -2675,6 +2677,52 @@ namespace Aurora.Services
                 resp["Total"] = Regions.Count;
                 resp["Regions"] = Regions;
             }
+            return resp;
+        }
+
+/// <summary>
+/// Attempts to restart the specified region.
+/// </summary>
+/// <param name="map"></param>
+/// <param name="requestingAgentID"></param>
+/// <returns></returns>
+        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        private OSDMap RestartRegion(OSDMap map, UUID requestingAgentID)
+        {
+            OSDMap resp = new OSDMap();
+
+            SceneManager manager = m_registry.RequestModuleInterface<SceneManager>();
+            if (manager == null)
+            {
+                resp["Failed"] = OSD.FromString("Could not get scene manager.");
+            }
+            else
+            {
+                GridRegion region = GetRegionByNameOrUUID(map);
+                IScene regionScene;
+                if (region == null)
+                {
+                    resp["Failed"] = OSD.FromString("Region does not appear to exist.");
+                }
+                else if (!manager.TryGetScene(region.RegionID, out regionScene))
+                {
+                    resp["Failed"] = OSD.FromString("Region was found in data store but could not be found via scene manager.");
+                }
+                else
+                {
+                    IRestartModule restartModule = regionScene.RequestModuleInterface<IRestartModule>();
+                    if (restartModule == null)
+                    {
+                        resp["Failed"] = OSD.FromString("Could not get IRestartModule from region scene.");
+                    }
+                    else
+                    {
+                        restartModule.RestartScene();
+                        resp["Success"] = OSD.FromBoolean(true);
+                    }
+                }
+            }
+
             return resp;
         }
 
