@@ -2619,17 +2619,16 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
-        private OSDMap GetRegion(OSDMap map)
+        private GridRegion GetRegionByNameOrUUID(OSDMap map)
         {
-            OSDMap resp = new OSDMap();
+            GridRegion region = null;
+
             IRegionData regiondata = Aurora.DataManager.DataManager.RequestPlugin<IRegionData>();
             if (regiondata != null && (map.ContainsKey("RegionID") || map.ContainsKey("Region")))
             {
                 string regionName = map.ContainsKey("Region") ? map["Region"].ToString().Trim() : "";
                 UUID regionID = map.ContainsKey("RegionID") ? UUID.Parse(map["RegionID"].ToString()) : UUID.Zero;
                 UUID scopeID = map.ContainsKey("ScopeID") ? UUID.Parse(map["ScopeID"].ToString()) : UUID.Zero;
-                GridRegion region = null;
                 if (regionID != UUID.Zero)
                 {
                     region = regiondata.Get(regionID, scopeID);
@@ -2639,10 +2638,19 @@ namespace Aurora.Services
                     List<GridRegion> regions = regiondata.Get(regionName, scopeID);
                     region = regions.Count > 0 ? regions[0] : null;
                 }
-                if (region != null)
-                {
-                    resp["Region"] = GridRegion2WebOSD(region);
-                }
+            }
+
+            return region;
+        }
+
+        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        private OSDMap GetRegion(OSDMap map)
+        {
+            OSDMap resp = new OSDMap();
+            GridRegion region = GetRegionByNameOrUUID(map);
+            if (region != null)
+            {
+                resp["Region"] = GridRegion2WebOSD(region);
             }
             return resp;
         }
