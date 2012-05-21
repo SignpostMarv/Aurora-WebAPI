@@ -40,6 +40,7 @@ using System.Collections.Specialized;
 using System.Reflection;
 using System.Timers;
 using System.Web;
+using System.Linq;
 
 using BitmapProcessing;
 
@@ -69,6 +70,57 @@ namespace Aurora.Services
         POST
     }
 
+    public enum WebAPIThreatLevel
+    {
+        /// <summary>
+        /// Cannot be used by write or delete methods.
+        /// Exposes no information inaccessible to anyone with "in-world" access.
+        /// If unrestricted use of a method is likely to cause annoyance to users (whether "in-world" or offline), the method MUST NOT use this level.
+        /// If a grid operator chooses to allow public but conservative API usage, any method that is likely to only be available to a limited number of users or specific group of users MUST NOT use this level.
+        /// </summary>
+        VeryLow,
+
+        /// <summary>
+        /// Cannot be used by delete methods.
+        /// Exposes or modifies no information inaccessible to anyone with "in-world" access.
+        /// If unrestricted use of a method is likely to cause annoyance to "in-world" users, the method MUST NOT use this level.
+        /// If a grid operator chooses to allow public but conservative API usage, any method that is likely to only be available at a low rate limit MUST NOT use this level.
+        /// </summary>
+        Low,
+
+        /// <summary>
+        /// Can only be used by delete methods if the information being deleted is ephemeral.
+        /// Exposes or modifies no information inaccessible to anyone with "in-world" access.
+        /// If a grid operator chooses to allow public but conservative API usage, any method that would impede the performance of a grid or cause annoyance to the users of a grid MUST be this level or higher.
+        /// </summary>
+        Medium,
+
+        /// <summary>
+        /// Can only be used by delete methods if the information being deleted is merely a cached form of other information.
+        /// Exposes or modifies information inaccessible to anyone with "in-world" access.
+        /// </summary>
+        High,
+
+        /// <summary>
+        /// Exposes or modifies information inaccessible to anyone with "in-world" access.
+        /// Methods exposing or modifying user's private information MUST use this level.
+        /// Methods which (excluding operator or user backups) would delete information which is not ephemeral or a cached form of other information thereby making the information unrecoverable MUST use this level.
+        /// </summary>
+        VeryHigh
+    }
+
+    class WebAPIUtils
+    {
+        public static WebAPIThreatLevel int2threat(int level)
+        {
+            IEnumerable<WebAPIThreatLevel> vals = Enum.GetValues(typeof(WebAPIThreatLevel)).Cast<WebAPIThreatLevel>();
+            WebAPIThreatLevel min = vals.Min<WebAPIThreatLevel>();
+            WebAPIThreatLevel max = vals.Max<WebAPIThreatLevel>();
+
+            return (level < (int)min ? min : (level > (int)max ? max : (WebAPIThreatLevel)level));
+        }
+    }
+
     public class WebAPIMethod : Attribute
     {
         private WebAPIHttpMethod m_httpMethod;
@@ -80,7 +132,7 @@ namespace Aurora.Services
             }
         }
 
-        private bool m_passOnRequestingAgentID;
+        private bool m_passOnRequestingAgentID = false;
         public bool PassOnRequestingAgentID
         {
             get
@@ -89,10 +141,19 @@ namespace Aurora.Services
             }
         }
 
+        private WebAPIThreatLevel m_threatLevel = WebAPIThreatLevel.VeryLow;
+        public WebAPIThreatLevel ThreatLevel
+        {
+            get
+            {
+                return m_threatLevel;
+            }
+        }
+
+/*
         public WebAPIMethod(WebAPIHttpMethod HttpMethod)
         {
             m_httpMethod = HttpMethod;
-            m_passOnRequestingAgentID = false;
         }
 
         public WebAPIMethod(WebAPIHttpMethod HttpMethod, bool passOnRequestingAgentID)
@@ -100,7 +161,20 @@ namespace Aurora.Services
             m_httpMethod = HttpMethod;
             m_passOnRequestingAgentID = passOnRequestingAgentID;
         }
+*/
 
+        public WebAPIMethod(WebAPIHttpMethod HttpMethod, WebAPIThreatLevel threat)
+        {
+            m_httpMethod = HttpMethod;
+            m_threatLevel = threat;
+        }
+
+        public WebAPIMethod(WebAPIHttpMethod HttpMethod, bool passOnRequestingAgentID, WebAPIThreatLevel threat)
+        {
+            m_httpMethod = HttpMethod;
+            m_passOnRequestingAgentID = passOnRequestingAgentID;
+            m_threatLevel = threat;
+        }
     }
 
     public interface IWebAPIConnector
@@ -196,6 +270,15 @@ namespace Aurora.Services
         /// <param name="user"></param>
         /// <returns></returns>
         UUID GetNewAccessToken(UUID user);
+
+        /// <summary>
+        /// Gets the maximum threat level the specified user is permitted to access.
+        /// </summary>
+        /// <param name="user"></param>
+        /// <returns></returns>
+        WebAPIThreatLevel GetMaxThreatLevel(UUID user);
+
+        bool SetMaxThreatLevel(UUID user, WebAPIThreatLevel level);
     }
 
     public interface IWebAPIHandler
@@ -212,6 +295,8 @@ namespace Aurora.Services
         byte[] doAPICall(BaseStreamHandler caller, string path, Stream requestData, OSHttpRequest httpRequest, OSHttpResponse httpResponse);
 
         Dictionary<WebAPIHttpMethod, List<string>> APIMethods();
+
+        Dictionary<WebAPIHttpMethod, List<string>> APIMethods(UUID user); 
     }
 
     public class WebAPI_StreamHandler : BaseStreamHandler
@@ -277,6 +362,7 @@ namespace Aurora.Services
         private const string c_table_access = "webapi_access";
         private const string c_table_accessLog = "webapi_access_log";
         private const string c_table_accessTokens = "webapi_access_tokens";
+        private const string c_table_accessMaxThreat = "webapi_access_maxthreat";
 
         private Dictionary<string, uint?> defaultAccessRate = new Dictionary<string, uint?>();
 
@@ -438,6 +524,7 @@ namespace Aurora.Services
                 filter.andFilters["user"] = user;
 
                 GD.Delete(c_table_access, filter);
+                GD.Delete(c_table_accessMaxThreat, filter);
             }
             return false;
         }
@@ -521,6 +608,23 @@ namespace Aurora.Services
             return newToken;
         }
 
+        public WebAPIThreatLevel GetMaxThreatLevel(UUID user)
+        {
+            QueryFilter filter = new QueryFilter();
+            filter.andFilters["user"] = user;
+            List<string> query = GD.Query(new string[1] { "maxthreat" }, c_table_accessMaxThreat, filter, null, 0, 1);
+
+            return WebAPIUtils.int2threat(query.Count == 1 ? int.Parse(query[0]) : 0);
+        }
+
+        public bool SetMaxThreatLevel(UUID user, WebAPIThreatLevel level)
+        {
+            return GD.Insert(c_table_accessMaxThreat, new object[2]{
+                user,
+                (int)level
+            }, "maxthreat", (int)level);
+        }
+
         #endregion
     }
 
@@ -597,18 +701,47 @@ namespace Aurora.Services
 
             m_authNonces = new ExpiringCache<string, string>();
 
-            MainConsole.Instance.Commands.AddCommand("webapi promote user", "Grants the specified user administrative powers within WebAPI.", "webapi promote user", PromoteUser);
-            MainConsole.Instance.Commands.AddCommand("webapi demote user", "Revokes administrative powers for WebAPI from the specified user.", "webapi demote user", DemoteUser);
-            MainConsole.Instance.Commands.AddCommand("webapi add group as news source", "Sets a group as a news source so in-world group notices can be used as a publishing tool for the website.", "webapi add group as news source", AddGroupAsNewsSource);
-            MainConsole.Instance.Commands.AddCommand("webapi remove group as news source", "Removes a group as a news source so it's notices will stop showing up on the news page.", "webapi remove group as news source", RemoveGroupAsNewsSource);
+            #region Users
+
+            MainConsole.Instance.Commands.AddCommand("webapi user promote", "Grants the specified user administrative powers within WebAPI.", "webapi user promote", PromoteUser);
+            MainConsole.Instance.Commands.AddCommand("webapi user demote", "Revokes administrative powers for WebAPI from the specified user.", "webapi user demote", DemoteUser);
+
+            #endregion
+
+            #region News
+
+            MainConsole.Instance.Commands.AddCommand("webapi news source add", "Sets a group as a news source so in-world group notices can be used as a publishing tool for the website.", "webapi news source add", AddGroupAsNewsSource);
+            MainConsole.Instance.Commands.AddCommand("webapi news source remove", "Removes a group as a news source so it's notices will stop showing up on the news page.", "webapi news source remove", RemoveGroupAsNewsSource);
+
+            #endregion
+
+            #region Access Tokens
+
+            MainConsole.Instance.Commands.AddCommand("webapi access token", "Gets the current access token to the API for the specified user", "webapi access token", GetAccessToken);
+            MainConsole.Instance.Commands.AddCommand("webapi access token new", "Gets a new access token to the API for the specified user", "webapi access token new", GetNewAccessToken);
+
+            #endregion
+
+            #region ACL
+
+            MainConsole.Instance.Commands.AddCommand("webapi access grant", "Grants access to a specified method for a specified user.", "webapi access grant [method]", GrantAPIAccess);
+            MainConsole.Instance.Commands.AddCommand("webapi access revoke", "Revokes access for a specified user.", "webapi access revoke", RevokeAPIAccess);
+            MainConsole.Instance.Commands.AddCommand("webapi access reset", "Resets access to defaults for a specified method for a specified user.", "webapi access reset", ResetAPIAccess);
+            MainConsole.Instance.Commands.AddCommand("webapi access display", "Displays information about the API usage for the specified user.", "webapi access display", DisplayAPIAccessInfo);
+
+            MainConsole.Instance.Commands.AddCommand("webapi access threat get", "Gets maximum threat level for API access for the specified user.", "webapi access threat get", GetMaxThreatLevel);
+            MainConsole.Instance.Commands.AddCommand("webapi access threat set", "Sets maximum threat level for API access for the specified user.", "webapi access threat set", SetMaxThreatLevel);
+
+            #endregion
+
+            #region Log
+
+            MainConsole.Instance.Commands.AddCommand("webapi log clear", "Clears the API access log", "webapi log clear [staleonly]", ClearLog);
+            MainConsole.Instance.Commands.AddCommand("webapi log usage", "Get the current usage rate for the specified user on the specified method.", "webapi log usage", GetUsageRate);
+
+            #endregion
+
             MainConsole.Instance.Commands.AddCommand("webapi list methods", "List API methods", "webapi list methods", ListAPImethods);
-            MainConsole.Instance.Commands.AddCommand("webapi get access token", "Gets the current access token to the API for the specified user", "webapi get access token", GetAccessToken);
-            MainConsole.Instance.Commands.AddCommand("webapi get new access token", "Gets a new access token to the API for the specified user", "webapi get new access token", GetNewAccessToken);
-            MainConsole.Instance.Commands.AddCommand("webapi clear log", "Clears the API access log", "webapi clear log [staleonly]", ClearLog);
-            MainConsole.Instance.Commands.AddCommand("webapi get usage rate", "Get the current usage rate for the specified user on the specified method.", "webapi get usage rate", GetUsageRate);
-            MainConsole.Instance.Commands.AddCommand("webapi grant access", "Grants access to a specified method for a specified user.", "webapi grant access [method]", GrantAPIAccess);
-            MainConsole.Instance.Commands.AddCommand("webapi revoke access", "Revokes access for a specified user.", "webapi revoke access", RevokeAPIAccess);
-            MainConsole.Instance.Commands.AddCommand("webapi reset access", "Resets access to defaults for a specified method for a specified user.", "webapi reset access", ResetAPIAccess);
         }
 
         public void FinishedStartup()
@@ -745,6 +878,85 @@ namespace Aurora.Services
             }
         }
 
+        private void GetMaxThreatLevel(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                MainConsole.Instance.InfoFormat("[" + Name + "]: Maximum API threat level for {0} is {1}", name, m_connector.GetMaxThreatLevel(resp["UUID"]).ToString()); 
+            }
+        }
+
+        private void SetMaxThreatLevel(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                IEnumerable<WebAPIThreatLevel> vals = Enum.GetValues(typeof(WebAPIThreatLevel)).Cast<WebAPIThreatLevel>().OrderBy(v => (int)v);
+                WebAPIThreatLevel defaultThreat = vals.Min<WebAPIThreatLevel>();
+                List<string> levels = new List<string>();
+                List<string> options = new List<string>();
+                foreach (WebAPIThreatLevel level in vals)
+                {
+                    levels.Add(level.ToString() + "(" + ((int)level) + ")");
+                    options.Add(((int)level).ToString());
+                }
+
+                m_connector.SetMaxThreatLevel(resp["UUID"].AsUUID(), WebAPIUtils.int2threat(int.Parse(MainConsole.Instance.Prompt("Maximum threat level (" + string.Join(", ", levels.ToArray()) + ")", ((int)defaultThreat).ToString(), options))));
+            }
+        }
+
+        private void DisplayAPIAccessInfo(string[] cmd)
+        {
+            string name = MainConsole.Instance.Prompt("Name of user");
+
+            OSDMap args = new OSDMap(1);
+            args["Name"] = name;
+            OSDMap resp = CheckIfUserExists(args);
+            if ((!resp.ContainsKey("Verified") || !resp.ContainsKey("UUID")) || (!resp["Verified"].AsBoolean() || resp["UUID"].AsUUID() == UUID.Zero))
+            {
+                MainConsole.Instance.ErrorFormat("[" + Name + "]: {0} does not appear to exist.", name);
+            }
+            else
+            {
+                UUID user = resp["UUID"].AsUUID();
+
+                Dictionary<WebAPIHttpMethod, List<string>> methods = APIMethods(user);
+                string longest = m_APIMethodThreatLevels.Keys.OrderBy(x => x.Length).Last<string>();
+                string output = string.Format("\nAPI Methods for {0}\nMaximum threat level {1}", name, m_connector.GetMaxThreatLevel(resp["UUID"]).ToString());
+
+                foreach (KeyValuePair<WebAPIHttpMethod, List<string>> kvp in methods)
+                {
+                    output += "\n \n" + string.Format("HTTP Method | {0} | Current Usage Rate | Rate Limit", "API Method".PadLeft(longest.Length + 8 - 11 - 3));
+                    output += "\n " + kvp.Key.ToString().PadLeft(10) + " |".PadRight(longest.Length + 33, '-');
+                    foreach (string method in kvp.Value)
+                    {
+                        uint currentUsage = m_connector.GetUsageRate(user, method);
+                        uint? rateLimit = m_connector.GetRateLimit(user, method);
+                        output += string.Format("\n{0} | {1} | {2}", method.PadLeft(longest.Length + 8), currentUsage.ToString().PadRight(18), (rateLimit.HasValue ? rateLimit.Value.ToString() : "none").PadRight(10));
+                    }
+                }
+
+                MainConsole.Instance.Info("[" + Name + "]: " + output);
+            }
+        }
+
         #endregion
 
         #region WebAPI Admin
@@ -842,6 +1054,7 @@ namespace Aurora.Services
         #region IWebAPIHandler members
 
         private Dictionary<WebAPIHttpMethod, Dictionary<string, MethodInfo>> m_APIMethods = new Dictionary<WebAPIHttpMethod, Dictionary<string, MethodInfo>>();
+        private Dictionary<string, WebAPIThreatLevel> m_APIMethodThreatLevels = new Dictionary<string, WebAPIThreatLevel>();
 
         public Dictionary<WebAPIHttpMethod, List<string>> APIMethods()
         {
@@ -852,6 +1065,28 @@ namespace Aurora.Services
             }
             return methods;
         }
+
+        public Dictionary<WebAPIHttpMethod, List<string>> APIMethods(UUID user)
+        {
+            WebAPIThreatLevel userMaxThreatLevel = m_connector.GetMaxThreatLevel(user);
+
+            Dictionary<WebAPIHttpMethod, List<string>> resp = new Dictionary<WebAPIHttpMethod, List<string>>();
+
+            foreach (KeyValuePair<WebAPIHttpMethod, List<string>> kvp in APIMethods())
+            {
+                resp[kvp.Key] = new List<string>();
+                foreach (string method in kvp.Value)
+                {
+                    if ((int)m_APIMethodThreatLevels[method] <= (int)userMaxThreatLevel)
+                    {
+                        resp[kvp.Key].Add(method);
+                    }
+                }
+            }
+
+            return resp;
+        }
+
 
         public WebAPIHandler()
         {
@@ -867,6 +1102,7 @@ namespace Aurora.Services
                     if ((!attr.PassOnRequestingAgentID && methods[i].GetParameters().Length == 1) || (attr.PassOnRequestingAgentID && methods[i].GetParameters().Length == 2))
                     {
                         m_APIMethods[attr.HttpMethod][methods[i].Name] = methods[i];
+                        m_APIMethodThreatLevels[methods[i].Name] = attr.ThreatLevel;
                     }
                 }
             }
@@ -965,8 +1201,17 @@ namespace Aurora.Services
                         {
                             if (m_connector.AllowAPICall(accountID, method))
                             {
-                                m_connector.LogAPICall(accountID, method);
-                                return true;
+                                if (m_APIMethodThreatLevels[method] <= m_connector.GetMaxThreatLevel(accountID))
+                                {
+                                    m_connector.LogAPICall(accountID, method);
+                                    return true;
+                                }
+                                else
+                                {
+                                    response.StatusCode = 403;
+                                    response.StatusDescription = "Forbidden";
+                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1} due to threat level restriction.", authorization["username"], method);
+                                }
                             }
                             else if (m_connector.GetRateLimit(accountID, method) == null)
                             {
@@ -1219,7 +1464,7 @@ namespace Aurora.Services
 
         #region Grid
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Low)]
         private OSDMap OnlineStatus(OSDMap map)
         {
             ILoginService loginService = m_registry.RequestModuleInterface<ILoginService>();
@@ -1232,7 +1477,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Low)]
         private OSDMap get_grid_info(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1249,7 +1494,7 @@ namespace Aurora.Services
         /// </summary>
         /// <param name="map">UUID, FirstName, LastName</param>
         /// <returns>Verified</returns>
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap ChangeName(OSDMap map)
         {
             IUserAccountService accountService = m_registry.RequestModuleInterface<IUserAccountService>();
@@ -1268,7 +1513,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap EditUser(OSDMap map)
         {
             bool editRLInfo = (map.ContainsKey("RLName") && map.ContainsKey("RLAddress") && map.ContainsKey("RLZip") && map.ContainsKey("RLCity") && map.ContainsKey("RLCountry"));
@@ -1314,7 +1559,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.High)]
         private OSDMap ResetAvatar(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1348,7 +1593,7 @@ namespace Aurora.Services
 
         #region Registration
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryLow)]
         private OSDMap CheckIfUserExists(OSDMap map)
         {
             IUserAccountService accountService = m_registry.RequestModuleInterface<IUserAccountService>();
@@ -1361,7 +1606,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryLow)]
         private OSDMap GetAvatarArchives(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1385,7 +1630,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap CreateAccount(OSDMap map)
         {
             bool Verified = false;
@@ -1485,7 +1730,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.High)]
         private OSDMap Authenticated(OSDMap map)
         {
             IUserAccountService accountService = m_registry.RequestModuleInterface<IUserAccountService>();
@@ -1511,7 +1756,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.High)]
         private OSDMap ActivateAccount(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1555,6 +1800,7 @@ namespace Aurora.Services
         #endregion
 
         #region Login
+
         private OSDMap doLogin(OSDMap map, bool asAdmin)
         {
             string Name = map["Name"].AsString();
@@ -1605,19 +1851,19 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.High)]
         private OSDMap Login(OSDMap map)
         {
             return doLogin(map, false);
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap AdminLogin(OSDMap map)
         {
             return doLogin(map, false);
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap SetWebLoginKey(OSDMap map)
         {
             OSDMap resp = new OSDMap ();
@@ -1646,7 +1892,7 @@ namespace Aurora.Services
         /// </summary>
         /// <param name="map">UUID, Email</param>
         /// <returns>Verified</returns>
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap SaveEmail(OSDMap map)
         {
             string email = map["Email"].AsString();
@@ -1666,7 +1912,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap ConfirmUserEmailName(OSDMap map)
         {
             string Name = map["Name"].AsString();
@@ -1710,7 +1956,7 @@ namespace Aurora.Services
 
         #region password
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap ChangePassword(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1737,7 +1983,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap ForgotPassword(OSDMap map)
         {
             UUID UUDI = map["UUID"].AsUUID();
@@ -1772,6 +2018,44 @@ namespace Aurora.Services
         #endregion
 
         #region Users
+
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
+        private OSDMap GetAPIMethods(OSDMap map)
+        {
+            OSDMap resp = new OSDMap();
+            UUID userID;
+
+            if (!map.ContainsKey("UUID"))
+            {
+                resp["Failed"] = OSD.FromString("UUID not specified.");
+            }
+            else if (!UUID.TryParse(map["UUID"].ToString(), out userID))
+            {
+                resp["Failed"] = OSD.FromString("UUID not valid.");
+            }
+            else
+            {
+                Dictionary<WebAPIHttpMethod, List<string>> methods = APIMethods(userID);
+                OSDArray methodsResp = new OSDArray();
+                foreach (KeyValuePair<WebAPIHttpMethod, List<string>> kvp in methods)
+                {
+                    foreach (string method in kvp.Value)
+                    {
+                        OSDMap methodResp = new OSDMap(5);
+                        methodResp["Method"] = method;
+                        methodResp["HTTP"] = kvp.Key.ToString();
+                        methodResp["ThreatLevel"] = m_APIMethodThreatLevels[method].ToString();
+                        methodResp["UsageRate"] = m_connector.GetUsageRate(userID, method);
+                        methodResp["RateLimit"] = m_connector.GetRateLimit(userID, method);
+                        methodsResp.Add(methodResp);
+                    }
+                }
+
+                resp["APIMethods"] = methodsResp;
+            }
+
+            return resp;
+        }
 
         private OSDMap UserAccount2InfoWebOSD(UserAccount user)
         {
@@ -1837,7 +2121,7 @@ namespace Aurora.Services
         /// </summary>
         /// <param name="map">UUID</param>
         /// <returns>Verified, HomeName, HomeUUID, Online, Email, FirstName, LastName</returns>
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
         private OSDMap GetGridUserInfo(OSDMap map)
         {
             string uuid = String.Empty;
@@ -1858,7 +2142,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryHigh)]
         private OSDMap GetProfile(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1937,7 +2221,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
         private OSDMap FindUsers(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -1988,7 +2272,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryHigh)]
         private OSDMap GetFriends(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2025,7 +2309,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap DeleteUser(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2042,7 +2326,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.High)]
         private OSDMap SetHomeLocation(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2134,7 +2418,7 @@ namespace Aurora.Services
 
         #region statistics
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
         private OSDMap NumberOfRecentlyOnlineUsers(OSDMap map)
         {
             uint secondsAgo = map.ContainsKey("secondsAgo") ? uint.Parse(map["secondsAgo"]) : 0;
@@ -2149,7 +2433,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
         private OSDMap RecentlyOnlineUsers(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2205,7 +2489,7 @@ namespace Aurora.Services
             }
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap BanUser(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2216,7 +2500,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap TempBanUser(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2228,7 +2512,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap UnBanUser(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2257,7 +2541,7 @@ namespace Aurora.Services
 
         #region IAbuseReports
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryHigh)]
         private OSDMap GetAbuseReports(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2282,7 +2566,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryHigh)]
         private OSDMap GetAbuseReport(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2311,7 +2595,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap AbuseReportMarkComplete(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2332,7 +2616,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap AbuseReportSaveNotes(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2374,7 +2658,7 @@ namespace Aurora.Services
             return es;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
         private OSDMap GetEstates(OSDMap map)
         {
             OSDMap resp = new OSDMap(1);
@@ -2400,7 +2684,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.High)]
         private OSDMap GetEstate(OSDMap map)
         {
             OSDMap resp = new OSDMap(1);
@@ -2440,7 +2724,7 @@ namespace Aurora.Services
             return regionOSD;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetRegions(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2491,7 +2775,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetRegionsByXY(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2537,7 +2821,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetRegionsInArea(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2581,7 +2865,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetRegionsInEstate(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2643,7 +2927,7 @@ namespace Aurora.Services
             return region;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetRegion(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2655,7 +2939,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetRegionNeighbours(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2692,7 +2976,7 @@ namespace Aurora.Services
             return parcelOSD;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetParcelsByRegion(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2731,7 +3015,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetParcelsWithNameByRegion(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2790,7 +3074,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Medium)]
         private OSDMap GetParcel(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2849,7 +3133,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.VeryHigh)]
         private OSDMap GroupAsNewsSource(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -2873,7 +3157,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, true, WebAPIThreatLevel.Low)]
         private OSDMap GetGroups(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -2953,7 +3237,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, true, WebAPIThreatLevel.High)]
         private OSDMap GetNewsSources(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3007,7 +3291,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, true, WebAPIThreatLevel.Low)]
         private OSDMap GetGroup(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3030,7 +3314,7 @@ namespace Aurora.Services
 
         #region GroupNoticeData
 
-        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, true, WebAPIThreatLevel.High)]
         private OSDMap GroupNotices(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3080,7 +3364,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, true, WebAPIThreatLevel.High)]
         private OSDMap NewsFromGroupNotices(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3119,7 +3403,7 @@ namespace Aurora.Services
             return GroupNotices(args, requestingAgentID);
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.GET, true)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, true, WebAPIThreatLevel.High)]
         private OSDMap GetGroupNotice(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3151,7 +3435,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST, true)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, true, WebAPIThreatLevel.High)]
         private OSDMap EditGroupNotice(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3185,7 +3469,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.VeryHigh)]
         private OSDMap AddGroupNotice(OSDMap map)
         {
             OSDMap resp = new OSDMap();
@@ -3255,7 +3539,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST, true)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, true, WebAPIThreatLevel.VeryHigh)]
         private OSDMap RemoveGroupNotice(OSDMap map, UUID requestingAgentID)
         {
             OSDMap resp = new OSDMap();
@@ -3308,7 +3592,7 @@ namespace Aurora.Services
 
         #region Events
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Low)]
         private OSDMap GetEvents(OSDMap map)
         {
             uint start = map.ContainsKey("Start") ? map["Start"].AsUInteger() : 0;
@@ -3356,7 +3640,7 @@ namespace Aurora.Services
             return resp;
         }
 
-        [WebAPIMethod(WebAPIHttpMethod.POST)]
+        [WebAPIMethod(WebAPIHttpMethod.POST, WebAPIThreatLevel.Medium)]
         private OSDMap CreateEvent(OSDMap map)
         {
             OSDMap resp = new OSDMap(1);
@@ -3403,7 +3687,7 @@ namespace Aurora.Services
 
         #region Textures
 
-        [WebAPIMethod(WebAPIHttpMethod.GET)]
+        [WebAPIMethod(WebAPIHttpMethod.GET, WebAPIThreatLevel.Low)]
         private OSDMap SizeOfHTTPGetTextureImage(OSDMap map)
         {
             OSDMap resp = new OSDMap(1);
