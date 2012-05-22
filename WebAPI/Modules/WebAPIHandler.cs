@@ -67,7 +67,8 @@ namespace Aurora.Services
     public enum WebAPIHttpMethod
     {
         GET,
-        POST
+        POST,
+        OPTIONS
     }
 
     public enum WebAPIThreatLevel
@@ -284,6 +285,21 @@ namespace Aurora.Services
     public interface IWebAPIHandler
     {
         /// <summary>
+        /// Determines if the Cross-Origin Resource Sharing has been enabled.
+        /// </summary>
+        bool EnableCORS { get; }
+
+        /// <summary>
+        /// If EnableCORS is true, specifies the origins allowed to use CORS for this API.
+        /// </summary>
+        List<string> AccessControlAllowOrigin { get; }
+
+        /// <summary>
+        /// Authentication mechanism to employ. "Digest" or "Basic".
+        /// </summary>
+        string APIAuthentication { get; }
+
+        /// <summary>
         /// Determines if a given API call should be processed.
         /// </summary>
         /// <param name="method"></param>
@@ -315,7 +331,31 @@ namespace Aurora.Services
 
         public override byte[] Handle(string path, Stream requestData, OSHttpRequest httpRequest, OSHttpResponse httpResponse)
         {
-            return WebAPI.doAPICall(this, path, requestData, httpRequest, httpResponse);
+            if (WebAPI.EnableCORS)
+            {
+                if ((new List<string>(httpRequest.Headers.AllKeys)).Contains("origin"))
+                {
+                    string origin = httpRequest.Headers["origin"];
+                    if (WebAPI.AccessControlAllowOrigin.Contains(origin) || WebAPI.AccessControlAllowOrigin.Contains("*"))
+                    {
+                        httpResponse.AddHeader("Access-Control-Allow-Origin", origin);
+                        httpResponse.AddHeader("Access-Control-Allow-Methods", "GET, POST");
+                        httpResponse.AddHeader("Access-Control-Allow-Credentials", "true");
+                        httpResponse.AddHeader("Access-Control-Allow-Headers", "Authorization");
+                    }
+                }
+            }
+            if (HttpMethod != "OPTIONS")
+            {
+                return WebAPI.doAPICall(this, path, requestData, httpRequest, httpResponse);
+            }
+            else if (!WebAPI.EnableCORS)
+            {
+                httpResponse.StatusCode = 405;
+                httpResponse.StatusDescription = "Method Not Allowed";
+            }
+            httpResponse.ContentType = "application/json";
+            return new byte[0];
         }
 
         #endregion
@@ -686,6 +726,10 @@ namespace Aurora.Services
                 }
             }
 
+            m_APIAuthentication = webapiConfig.GetString("SupportedAuthentication", "Digest");
+            m_EnableCORS = webapiConfig.GetBoolean("CORS", false);
+            m_AccessControlAllowOrigin = (new List<string>(webapiConfig.GetString("AccessControlAllowOrigin", "*").Split(' '))).ConvertAll<string>(x=>x.Trim());
+
             ISimulationBase simBase = registry.RequestModuleInterface<ISimulationBase>();
 
             m_server = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "Port", m_connector.HandlerPort));
@@ -1053,6 +1097,24 @@ namespace Aurora.Services
 
         #region IWebAPIHandler members
 
+        private bool m_EnableCORS = false;
+        public bool EnableCORS
+        {
+            get { return m_EnableCORS; }
+        }
+
+        private List<string> m_AccessControlAllowOrigin = new List<string> { "*" };
+        public List<string> AccessControlAllowOrigin
+        {
+            get { return m_AccessControlAllowOrigin; }
+        }
+
+        private string m_APIAuthentication;
+        public string APIAuthentication
+        {
+            get { return m_APIAuthentication; }
+        }
+
         private Dictionary<WebAPIHttpMethod, Dictionary<string, MethodInfo>> m_APIMethods = new Dictionary<WebAPIHttpMethod, Dictionary<string, MethodInfo>>();
         private Dictionary<string, WebAPIThreatLevel> m_APIMethodThreatLevels = new Dictionary<string, WebAPIThreatLevel>();
 
@@ -1112,13 +1174,14 @@ namespace Aurora.Services
 
         private Dictionary<string, string> authorizationHeader(OSHttpRequest request)
         {
+            Dictionary<string, string> authorization = null;
             if ((new List<string>(request.Headers.AllKeys)).Contains("authorization"))
             {
                 string auth = request.Headers["authorization"];
-                if (auth.Substring(0, 7) == "Digest ")
+                if (APIAuthentication == "Digest" && auth.Substring(0, 7) == "Digest ")
                 {
                     string[] authBits = Regex.Split(auth.Substring(7), ", ");
-                    Dictionary<string, string> authorization = new Dictionary<string, string>(authBits.Length);
+                    authorization = new Dictionary<string, string>(authBits.Length);
                     Regex authBitRegex = new Regex("^\".+\"$");
                     foreach (string authBit in authBits)
                     {
@@ -1130,8 +1193,113 @@ namespace Aurora.Services
                     }
                     return authorization;
                 }
+                else if (APIAuthentication == "Basic" && auth.Substring(0, 6) == "Basic ")
+                {
+                    
+                    string decoded = Util.Base64ToString(auth.Substring(6).Trim());
+                    int pos = decoded.IndexOf(':');
+                    if (pos > 0)
+                    {
+                        authorization = new Dictionary<string, string>(1);
+                        authorization["username"] = decoded.Substring(0, pos);
+                        authorization["password"] = decoded.Substring(pos + 1);
+                    }
+                }
             }
-            return null;
+            return authorization;
+        }
+
+        private bool negotiateAuth(OSHttpRequest request, OSHttpResponse response)
+        {
+            Dictionary<string, string> authorization = authorizationHeader(request);
+
+            switch (APIAuthentication)
+            {
+                case "Digest":
+
+                    if (authorization != null)
+                    {
+                        string storednonce;
+                        if (
+                            authorization.ContainsKey("username") &&
+                            authorization.ContainsKey("realm") &&
+                            authorization.ContainsKey("uri") &&
+                            authorization.ContainsKey("qop") &&
+                            authorization.ContainsKey("nonce") &&
+                            authorization.ContainsKey("nc") &&
+                            authorization.ContainsKey("cnonce") &&
+                            authorization.ContainsKey("opaque") &&
+                            m_authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
+                            authorization["nonce"] == storednonce
+                        )
+                        {
+                            m_authNonces.Remove(authorization["opaque"]);
+
+                            UUID accountID = authUser(request);
+
+                            if (accountID != UUID.Zero)
+                            {
+                                string password = Utils.MD5String(m_connector.GetAccessToken(accountID).ToString());
+
+                                string HA1 = Util.Md5Hash(string.Join(":", new string[]{
+                                    authorization["username"],
+                                    Name,
+                                    password
+                                }));
+                                string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
+                                string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
+                                    HA1,
+                                    storednonce,
+                                    authorization["nc"],
+                                    authorization["cnonce"],
+                                    "auth",
+                                    HA2
+                                })) : Util.Md5Hash(string.Join(":", new string[]{
+                                    HA1,
+                                    storednonce,
+                                    HA2
+                                }));
+                                if (expectedDigestResponse == authorization["response"])
+                                {
+                                    return true;
+                                }
+                                else
+                                {
+                                    MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
+                                }
+                            }
+                        }
+                    }
+                    string opaque = UUID.Random().ToString();
+                    string nonce = UUID.Random().ToString();
+                    m_authNonces.Add(opaque, nonce, 5);
+                    string digestHeader = "Digest " + string.Join(", ", new string[]{
+                            "realm=\"" + Name + "\"",
+                            "qop=\"auth\"",
+                            "nonce=\"" + nonce + "\"",
+                            "opaque=\"" + opaque + "\""
+                        });
+                    response.AddHeader("WWW-Authenticate", digestHeader);
+                    break;
+                case "Basic":
+                    if (authorization != null && authorization.ContainsKey("username") && authorization.ContainsKey("password"))
+                    {
+                        UUID accountID = authUser(request);
+                        if (accountID != UUID.Zero && authorization["password"] == Utils.MD5String(m_connector.GetAccessToken(accountID).ToString()))
+                        {
+                            return true;
+                        }
+                        else
+                        {
+                            MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
+                        }
+                    }
+                    response.AddHeader("WWW-Authenticate", "Basic realm=\"" + Name + "\"");
+                    break;
+            }
+            response.StatusCode = 401;
+            response.StatusDescription = "Unauthorized";
+            return false;
         }
 
         private UUID authUser(OSHttpRequest request)
@@ -1149,109 +1317,46 @@ namespace Aurora.Services
 
         public bool AllowAPICall(string method, OSHttpRequest request, OSHttpResponse response)
         {
-            Dictionary<string, string> authorization = authorizationHeader(request);
-            if (authorization != null)
+            if (negotiateAuth(request, response))
             {
-                string storednonce;
-                if (
-                    authorization.ContainsKey("username") &&
-                    authorization.ContainsKey("realm") &&
-                    authorization.ContainsKey("uri") &&
-                    authorization.ContainsKey("qop") &&
-                    authorization.ContainsKey("nonce") &&
-                    authorization.ContainsKey("nc") &&
-                    authorization.ContainsKey("cnonce") &&
-                    authorization.ContainsKey("opaque") &&
-                    m_authNonces.TryGetValue(authorization["opaque"], out storednonce) &&
-                    authorization["nonce"] == storednonce
-                )
+                UUID accountID = authUser(request);
+                if (accountID == UUID.Zero)
                 {
-                    m_authNonces.Remove(authorization["opaque"]);
-
-                    UUID accountID = authUser(request);
-                    if (accountID == UUID.Zero)
+                    response.StatusCode = 403;
+                    response.StatusDescription = "Forbidden";
+                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use WebAPI", accountID);
+                }
+                else if (m_connector.AllowAPICall(accountID, method))
+                {
+                    if (m_APIMethodThreatLevels[method] <= m_connector.GetMaxThreatLevel(accountID))
                     {
-                        response.StatusCode = 403;
-                        response.StatusDescription = "Forbidden";
-                        MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use WebAPI", authorization["username"], method);
+                        m_connector.LogAPICall(accountID, method);
+                        return true;
                     }
                     else
                     {
-                        string password = Utils.MD5String(m_connector.GetAccessToken(accountID).ToString());
-
-                        string HA1 = Util.Md5Hash(string.Join(":", new string[]{
-                                authorization["username"],
-                                Name,
-                                password
-                            }));
-                        string HA2 = Util.Md5Hash(request.HttpMethod + ":" + authorization["uri"]);
-                        string expectedDigestResponse = (authorization.ContainsKey("qop") && authorization["qop"] == "auth") ? Util.Md5Hash(string.Join(":", new string[]{
-                                HA1,
-                                storednonce,
-                                authorization["nc"],
-                                authorization["cnonce"],
-                                "auth",
-                                HA2
-                            })) : Util.Md5Hash(string.Join(":", new string[]{
-                                HA1,
-                                storednonce,
-                                HA2
-                            }));
-                        if (expectedDigestResponse == authorization["response"])
-                        {
-                            if (m_connector.AllowAPICall(accountID, method))
-                            {
-                                if (m_APIMethodThreatLevels[method] <= m_connector.GetMaxThreatLevel(accountID))
-                                {
-                                    m_connector.LogAPICall(accountID, method);
-                                    return true;
-                                }
-                                else
-                                {
-                                    response.StatusCode = 403;
-                                    response.StatusDescription = "Forbidden";
-                                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1} due to threat level restriction.", authorization["username"], method);
-                                }
-                            }
-                            else if (m_connector.GetRateLimit(accountID, method) == null)
-                            {
-                                response.StatusCode = 403;
-                                response.StatusDescription = "Forbidden";
-                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", authorization["username"], method);
-                            }
-                            else if (m_connector.RateLimitExceed(accountID, method))
-                            {
-                                response.StatusCode = 429;
-                                response.StatusDescription = "Too Many Requests";
-                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} exceeded their hourly rate limit for API method {1}", authorization["username"], method);
-                            }
-                            else
-                            {
-                                response.StatusCode = 500;
-                                MainConsole.Instance.DebugFormat("[WebAPI]: {0} cannotuse API method {1}, although we're not sure why.", authorization["username"], method);
-                            }
-                        }
-                        else
-                        {
-                            MainConsole.Instance.DebugFormat("[WebAPI]: API authentication failed for {0}", authorization["username"]);
-                        }
+                        response.StatusCode = 403;
+                        response.StatusDescription = "Forbidden";
+                        MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1} due to threat level restriction.", accountID, method);
                     }
                 }
-            }
-            else
-            {
-                string opaque = UUID.Random().ToString();
-                string nonce = UUID.Random().ToString();
-                m_authNonces.Add(opaque, nonce, 5);
-                response.StatusCode = 401;
-                response.StatusDescription = "Unauthorized";
-                string digestHeader = "Digest " + string.Join(", ", new string[]{
-                        "realm=\"" + Name + "\"",
-                        "qop=\"auth\"",
-                        "nonce=\"" + nonce + "\"",
-                        "opaque=\"" + opaque + "\""
-                    });
-                response.AddHeader("WWW-Authenticate", digestHeader);
+                else if (m_connector.GetRateLimit(accountID, method) == null)
+                {
+                    response.StatusCode = 403;
+                    response.StatusDescription = "Forbidden";
+                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} is not permitted to use API method {1}", accountID, method);
+                }
+                else if (m_connector.RateLimitExceed(accountID, method))
+                {
+                    response.StatusCode = 429;
+                    response.StatusDescription = "Too Many Requests";
+                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} exceeded their hourly rate limit for API method {1}", accountID, method);
+                }
+                else
+                {
+                    response.StatusCode = 500;
+                    MainConsole.Instance.DebugFormat("[WebAPI]: {0} cannotuse API method {1}, although we're not sure why.", accountID, method);
+                }
             }
             return false;
         }
