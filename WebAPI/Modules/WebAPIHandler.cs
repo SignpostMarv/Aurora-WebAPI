@@ -318,7 +318,7 @@ namespace Aurora.Services
 
         Dictionary<WebAPIHttpMethod, List<string>> APIMethods();
 
-        Dictionary<WebAPIHttpMethod, List<string>> APIMethods(UUID user); 
+        Dictionary<WebAPIHttpMethod, List<string>> APIMethods(UUID user);
     }
 
     public class WebAPI_StreamHandler : BaseStreamHandler
