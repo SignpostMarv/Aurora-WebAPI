@@ -363,38 +363,6 @@ namespace Aurora.Services
 
     public class WebAPIConnector : IAuroraDataPlugin, IWebAPIConnector
     {
-        private bool m_enabled = false;
-        public bool Enabled
-        {
-            get { return m_enabled; }
-        }
-
-        private string m_Handler = string.Empty;
-        public string Handler
-        {
-            get
-            {
-                return m_Handler;
-            }
-        }
-
-        private uint m_HandlerPort = 0;
-        public uint HandlerPort
-        {
-            get
-            {
-                return m_HandlerPort;
-            }
-        }
-
-        private uint m_TexturePort = 0;
-        public uint TexturePort
-        {
-            get
-            {
-                return m_TexturePort;
-            }
-        }
 
         private IGenericData GD;
         private string m_connectionString;
@@ -503,6 +471,39 @@ namespace Aurora.Services
         #endregion
 
         #region IWebAPIConnector Members
+
+        private bool m_enabled = false;
+        public bool Enabled
+        {
+            get { return m_enabled; }
+        }
+
+        private string m_Handler = string.Empty;
+        public string Handler
+        {
+            get
+            {
+                return m_Handler;
+            }
+        }
+
+        private uint m_HandlerPort = 0;
+        public uint HandlerPort
+        {
+            get
+            {
+                return m_HandlerPort;
+            }
+        }
+
+        private uint m_TexturePort = 0;
+        public uint TexturePort
+        {
+            get
+            {
+                return m_TexturePort;
+            }
+        }
 
         public bool LogAPICall(UUID user, string method)
         {
@@ -699,8 +700,8 @@ namespace Aurora.Services
                 return;
             }
 
-            IConfig handlerConfig = config.Configs["Handlers"];
-            UUID.TryParse(handlerConfig.GetString("WebAPIAdminID", UUID.Zero.ToString()), out AdminAgentID);
+            IConfig webapiConfig = config.Configs["WebAPI"];
+            UUID.TryParse(webapiConfig.GetString("AdminID", UUID.Zero.ToString()), out AdminAgentID);
 
             if (m_connector.Handler != Name)
             {
@@ -732,13 +733,13 @@ namespace Aurora.Services
 
             ISimulationBase simBase = registry.RequestModuleInterface<ISimulationBase>();
 
-            m_server = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "Port", m_connector.HandlerPort));
+            m_server = simBase.GetHttpServer(webapiConfig.GetUInt("Port", m_connector.HandlerPort));
             foreach (WebAPIHttpMethod method in Enum.GetValues(typeof(WebAPIHttpMethod)))
             {
                 m_server.AddStreamHandler(new WebAPI_StreamHandler(this, method)); // This handler is for WebAPI methods that only read data
             }
 
-            m_server2 = simBase.GetHttpServer(handlerConfig.GetUInt(Name + "TextureServerPort", m_connector.TexturePort));
+            m_server2 = simBase.GetHttpServer(webapiConfig.GetUInt("TextureServerPort", m_connector.TexturePort));
             m_server2.AddHTTPHandler("GridTexture", OnHTTPGetTextureImage);
 
             m_GridInfo[Name + "TextureServer"] = m_server2.ServerURI;
