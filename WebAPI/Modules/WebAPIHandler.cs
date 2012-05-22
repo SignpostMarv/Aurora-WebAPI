@@ -279,6 +279,12 @@ namespace Aurora.Services
         /// <returns></returns>
         WebAPIThreatLevel GetMaxThreatLevel(UUID user);
 
+        /// <summary>
+        /// Sets the maximum threat level the specified user is permitted to access
+        /// </summary>
+        /// <param name="user"></param>
+        /// <param name="level"></param>
+        /// <returns></returns>
         bool SetMaxThreatLevel(UUID user, WebAPIThreatLevel level);
     }
 
